@@ -1,0 +1,444 @@
+name: Build and Release .wotmod
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      build_swf:
+        description: 'Build SWF files'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: 'Mod Version'
+        required: true
+        default: '0.0.1'
+      mod_id:
+        description: 'Mod ID (e.g., me.author.modname)'
+        required: true
+        default: 'me.under_pressure.maingun'
+      mod_name:
+        description: 'Mod Name'
+        required: true
+        default: 'MainGun'
+      mod_description:
+        description: 'Mod Description'
+        required: true
+        default: 'Main Gun battle panel'
+      game_version:
+        description: 'World of Tanks version'
+        required: true
+        default: '2.3.0.1'
+
+permissions:
+  contents: write
+
+env:
+  FLEX_VERSION: "4.16.1"
+  FLASH_PLAYER_VERSION: "32.0"
+  SWF_VERSION: "39"
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Python 2.7 via Chocolatey
+      run: |
+        choco install python2 -y --no-progress
+
+    - name: Install Java (required for Flex SDK)
+      if: inputs.build_swf == true || github.event_name == 'push'
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '11'
+
+    - name: Cache Flex SDK
+      if: inputs.build_swf == true || github.event_name == 'push'
+      id: cache-flex
+      uses: actions/cache@v4
+      with:
+        path: C:\flex-sdk
+        key: flex-sdk-${{ env.FLEX_VERSION }}-v2
+
+    - name: Download and Setup Apache Flex SDK
+      if: (inputs.build_swf == true || github.event_name == 'push') && steps.cache-flex.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        Write-Host "Downloading Apache Flex SDK ${{ env.FLEX_VERSION }}..."
+        
+        # Try multiple download sources
+        $flexUrls = @(
+            "https://archive.apache.org/dist/flex/${{ env.FLEX_VERSION }}/binaries/apache-flex-sdk-${{ env.FLEX_VERSION }}-bin.zip",
+            "https://dlcdn.apache.org/flex/${{ env.FLEX_VERSION }}/binaries/apache-flex-sdk-${{ env.FLEX_VERSION }}-bin.zip"
+        )
+        
+        $downloaded = $false
+        foreach ($url in $flexUrls) {
+            try {
+                Write-Host "Trying: $url"
+                Invoke-WebRequest -Uri $url -OutFile "flex-sdk.zip" -UseBasicParsing -TimeoutSec 300
+                $downloaded = $true
+                break
+            } catch {
+                Write-Host "Failed: $_"
+            }
+        }
+        
+        if (-not $downloaded) {
+            Write-Error "Could not download Flex SDK"
+            exit 1
+        }
+        
+        Write-Host "Extracting Flex SDK..."
+        New-Item -ItemType Directory -Force -Path "C:\flex-sdk"
+        Expand-Archive -Path "flex-sdk.zip" -DestinationPath "C:\flex-sdk-temp" -Force
+        
+        # Handle nested folder structure
+        $extractedItems = Get-ChildItem "C:\flex-sdk-temp"
+        if ($extractedItems.Count -eq 1 -and $extractedItems[0].PSIsContainer) {
+            Get-ChildItem "$($extractedItems[0].FullName)" | Move-Item -Destination "C:\flex-sdk" -Force
+        } else {
+            Get-ChildItem "C:\flex-sdk-temp" | Move-Item -Destination "C:\flex-sdk" -Force
+        }
+        
+        Remove-Item "flex-sdk.zip" -Force -ErrorAction SilentlyContinue
+        Remove-Item "C:\flex-sdk-temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        Write-Host "Flex SDK installed"
+
+    - name: Setup playerglobal.swc
+      if: inputs.build_swf == true || github.event_name == 'push'
+      shell: pwsh
+      run: |
+        Write-Host "Setting up playerglobal.swc from project libs..."
+        
+        $libsPlayerGlobal = "as3\libs\playerglobal.swc"
+        
+        if (-not (Test-Path $libsPlayerGlobal)) {
+            Write-Error "playerglobal.swc not found at: $libsPlayerGlobal"
+            exit 1
+        }
+        
+        # Copy to all version directories
+        $versions = @("32.0")
+        foreach ($v in $versions) {
+            $vDir = "C:\flex-sdk\frameworks\libs\player\$v"
+            New-Item -ItemType Directory -Force -Path $vDir | Out-Null
+            Copy-Item $libsPlayerGlobal "$vDir\playerglobal.swc" -Force
+            Write-Host "  Copied to $vDir"
+        }
+        Copy-Item $libsPlayerGlobal "C:\flex-sdk\frameworks\libs\player\playerglobal.swc" -Force
+        
+        # Fix flex-config.xml to use absolute path
+        $flexConfig = "C:\flex-sdk\frameworks\flex-config.xml"
+        if (Test-Path $flexConfig) {
+            $content = Get-Content $flexConfig -Raw
+            $content = $content -replace '\{playerglobalHome\}', 'C:/flex-sdk/frameworks/libs/player'
+            $content | Set-Content $flexConfig -Encoding UTF8
+            Write-Host "Updated flex-config.xml with absolute playerglobal path"
+        }
+        
+        Write-Host "playerglobal.swc setup complete"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install psutil
+
+    - name: Determine Version and Mod Info
+      id: version
+      shell: pwsh
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}"
+            $modId = "${{ inputs.mod_id }}"
+            $modName = "${{ inputs.mod_name }}"
+            $modDescription = "${{ inputs.mod_description }}"
+            $gameVersion = "${{ inputs.game_version }}"
+        } else {
+            # For tag pushes, use defaults or extract from tag
+            $version = "${{ github.ref_name }}".TrimStart('v')
+            $modId = "me.under_pressure.maingun"
+            $modName = "MainGun"
+            $modDescription = "Main Gun battle panel"
+            $gameVersion = "2.3.0.1"
+        }
+        
+        echo "PROJECT_VERSION=$version" >> $env:GITHUB_ENV
+        echo "MOD_ID=$modId" >> $env:GITHUB_ENV
+        echo "MOD_NAME=$modName" >> $env:GITHUB_ENV
+        echo "MOD_DESCRIPTION=$modDescription" >> $env:GITHUB_ENV
+        echo "GAME_VERSION=$gameVersion" >> $env:GITHUB_ENV
+        
+        Write-Host "Version: $version"
+        Write-Host "Mod ID: $modId"
+        Write-Host "Mod Name: $modName"
+        Write-Host "Description: $modDescription"
+        Write-Host "Game Version: $gameVersion"
+
+    - name: Build SWF files
+      if: inputs.build_swf == true || github.event_name == 'push'
+      shell: pwsh
+      run: |
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "         Building SWF Files            " -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        
+        $env:Path = "C:\flex-sdk\bin;$env:Path"
+        
+        # Verify mxmlc is available
+        $mxmlcPath = "C:\flex-sdk\bin\mxmlc.bat"
+        if (-not (Test-Path $mxmlcPath)) {
+            Write-Error "mxmlc not found at $mxmlcPath"
+            Get-ChildItem "C:\flex-sdk\bin" | Select-Object Name
+            exit 1
+        }
+        
+        $as3Root = "as3"
+        $srcFlash = "$as3Root/src_flash"
+        $libsPath = "$as3Root/libs"
+        $outputPath = "as3/bin"
+        
+        # Create output directory
+        New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
+        
+        # Collect all library SWC files
+        $libArgs = @()
+        if (Test-Path $libsPath) {
+            Write-Host ""
+            Write-Host "Libraries found in ${libsPath}:" -ForegroundColor Yellow
+            Get-ChildItem -Path $libsPath -Filter "*.swc" -Recurse | ForEach-Object {
+                Write-Host "  - $($_.Name)"
+                if ($_.Name -eq "playerglobal.swc") {
+                    $libArgs += "-library-path+=$($_.FullName)"
+                } else {
+                    $libArgs += "-external-library-path+=$($_.FullName)"
+                }
+            }
+        }
+
+        
+        # Find AS3 projects
+        $projects = Get-ChildItem -Path $srcFlash -Filter "*.as3proj" -Recurse
+        
+        if ($projects.Count -eq 0) {
+            Write-Warning "No .as3proj files found in $srcFlash"
+            Write-Host "Looking for main ActionScript files..."
+            $mainFiles = Get-ChildItem -Path "$srcFlash/src" -Filter "*.as" -Recurse | Where-Object { 
+                $_.Directory.Name -eq "src" -or $_.Directory.Parent.Name -eq "src"
+            }
+            Write-Host "Found AS files:"
+            $mainFiles | ForEach-Object { Write-Host "  - $($_.FullName)" }
+        }
+        
+        foreach ($proj in $projects) {
+            Write-Host ""
+            Write-Host "----------------------------------------" -ForegroundColor Gray
+            Write-Host "Project: $($proj.Name)" -ForegroundColor Yellow
+            Write-Host "----------------------------------------" -ForegroundColor Gray
+            
+            $projDir = $proj.DirectoryName
+            [xml]$projXml = Get-Content $proj.FullName
+            
+            # Extract settings from project file
+            $swfName = "output.swf"
+            $outputNode = $projXml.project.output.movie | Where-Object { $_.path -and $_.path -ne "" }
+            if ($outputNode) {
+                $swfName = $outputNode.path
+            }
+            
+            # Get source paths
+            $sourcePaths = @()
+            $srcDir = Join-Path $projDir "src"
+            if (Test-Path $srcDir) {
+                $sourcePaths += $srcDir
+            }
+            
+            $projXml.project.classpaths.class | ForEach-Object {
+                if ($_.path) {
+                    $cp = Join-Path $projDir $_.path
+                    if (Test-Path $cp) {
+                        $sourcePaths += $cp
+                    }
+                }
+            }
+            
+            # Get main class from compile targets
+            $mainClassPath = $null
+            $projXml.project.compileTargets.compile | ForEach-Object {
+                if ($_.path) {
+                    $mainClassPath = Join-Path $projDir $_.path
+                }
+            }
+            
+            if (-not $mainClassPath -or -not (Test-Path $mainClassPath)) {
+                Write-Warning "Could not find main class file"
+                continue
+            }
+            
+            Write-Host "  Main class: $mainClassPath"
+            Write-Host "  Output: $swfName"
+            Write-Host "  Source paths: $($sourcePaths -join ', ')"
+            
+            $outputSwf = Join-Path $outputPath $swfName
+            
+            # Build mxmlc arguments
+            $mxmlcArgs = @()
+            
+            # Source paths
+            foreach ($sp in $sourcePaths) {
+                $mxmlcArgs += "-source-path+=$sp"
+            }
+            
+            # Add library paths
+            $mxmlcArgs += $libArgs
+            
+            # Compiler settings
+            $mxmlcArgs += @(
+                "-output=$outputSwf",
+                "-target-player=${{ env.FLASH_PLAYER_VERSION }}",
+                "-swf-version=${{ env.SWF_VERSION }}",
+                "-strict=true",
+                "-optimize=true",
+                "-warnings=true",
+                "--"
+            )
+            
+            # Main class file
+            $mxmlcArgs += $mainClassPath
+            
+            Write-Host ""
+            Write-Host "  Compiling..." -ForegroundColor Cyan
+            
+            # Run mxmlc
+            $process = Start-Process -FilePath $mxmlcPath -ArgumentList $mxmlcArgs -NoNewWindow -Wait -PassThru -RedirectStandardOutput "mxmlc_out.txt" -RedirectStandardError "mxmlc_err.txt"
+            
+            $stdout = Get-Content "mxmlc_out.txt" -Raw -ErrorAction SilentlyContinue
+            $stderr = Get-Content "mxmlc_err.txt" -Raw -ErrorAction SilentlyContinue
+            
+            if ($stdout) { Write-Host $stdout }
+            if ($stderr) { Write-Host $stderr -ForegroundColor Yellow }
+            
+            if ($process.ExitCode -ne 0) {
+                Write-Error "Compilation failed for $swfName (exit code: $($process.ExitCode))"
+                exit 1
+            }
+            
+            if (Test-Path $outputSwf) {
+                $size = (Get-Item $outputSwf).Length
+                Write-Host "  SUCCESS: $swfName ($([math]::Round($size/1KB, 2)) KB)" -ForegroundColor Green
+            } else {
+                Write-Error "Output file not created: $outputSwf"
+                exit 1
+            }
+            
+            Remove-Item "mxmlc_out.txt", "mxmlc_err.txt" -Force -ErrorAction SilentlyContinue
+        }
+        
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Host "         SWF Build Summary              " -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        
+        $swfFiles = Get-ChildItem -Path $outputPath -Filter "*.swf" -ErrorAction SilentlyContinue
+        if ($swfFiles) {
+            $swfFiles | ForEach-Object {
+                Write-Host "  $($_.Name) - $([math]::Round($_.Length/1KB, 2)) KB" -ForegroundColor Green
+            }
+        } else {
+            Write-Warning "No SWF files in output directory"
+        }
+
+    - name: Create build.json
+      shell: pwsh
+      run: |
+        $jsonContent = @{
+            version = 5
+            software = @{
+                animate = " "
+                python = "C:/Python27/python.exe"
+            }
+            game = @{
+                force = $false
+                folder = "World_of_Tanks_EU"
+                version = "${{ env.GAME_VERSION }}"
+            }
+            info = @{
+                id = "${{ env.MOD_ID }}"
+                name = "${{ env.MOD_NAME }}"
+                description = "${{ env.MOD_DESCRIPTION }}"
+                version = "${{ env.PROJECT_VERSION }}"
+            }
+        } | ConvertTo-Json -Depth 4
+        $jsonContent | Out-File -FilePath build.json -Encoding UTF8
+        
+        Write-Host "build.json created:"
+        Get-Content build.json
+
+    - name: Verify build inputs
+      shell: pwsh
+      run: |
+        Write-Host "=== Pre-build verification ===" -ForegroundColor Cyan
+        
+        # Check SWF files
+        $swfPath = "as3/bin"
+        if (Test-Path $swfPath) {
+            Write-Host "SWF files:" -ForegroundColor Green
+            Get-ChildItem -Path $swfPath -Filter "*.swf" | ForEach-Object {
+                Write-Host "  $($_.FullName)"
+            }
+        }
+        
+        # Check Python files
+        $pyPath = "python"
+        if (Test-Path $pyPath) {
+            Write-Host ""
+            Write-Host "Python files:" -ForegroundColor Green
+            Get-ChildItem -Path $pyPath -Filter "*.py" -Recurse | Select-Object -First 10 | ForEach-Object {
+                Write-Host "  $($_.FullName)"
+            }
+        }
+        
+        # Check directory structure
+        Write-Host ""
+        Write-Host "Root directory structure:" -ForegroundColor Green
+        Get-ChildItem -Path "." -Directory | ForEach-Object {
+            Write-Host "  $($_.Name)/"
+        }
+
+    - name: Run Build Script
+      run: python build.py --distribute
+
+    - name: List build artifacts
+      shell: pwsh
+      run: |
+        Write-Host "=== Final Build Artifacts ===" -ForegroundColor Cyan
+        if (Test-Path "build") {
+            Get-ChildItem -Path "build" -Recurse | ForEach-Object {
+                $size = if ($_.PSIsContainer) { "[DIR]" } else { "$([math]::Round($_.Length/1KB, 2)) KB" }
+                Write-Host "  $($_.FullName) - $size"
+            }
+        }
+
+    - name: Upload to Release
+      uses: ncipollo/release-action@v1.14.0
+      with:
+        tag: "v${{ env.PROJECT_VERSION }}"
+        commit: ${{ github.sha }}
+        artifacts: "build/*.wotmod"
+        allowUpdates: true
+        removeArtifacts: true
+        makeLatest: true
+        token: ${{ secrets.GITHUB_TOKEN }}
