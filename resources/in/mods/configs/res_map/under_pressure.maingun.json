@@ -1,0 +1,12 @@
+[
+  {
+    "itemID": "mods/under_pressure/MainGunBattle/layoutID",
+    "type": "Layout",
+    "path": "coui://gui/gameface/mods/under_pressure/MainGunPanel/MainGunBattle.html",
+    "parameters": {
+      "extension": "",
+      "entrance": "MainGunBattle",
+      "impl": "gameface"
+    }
+  }
+]

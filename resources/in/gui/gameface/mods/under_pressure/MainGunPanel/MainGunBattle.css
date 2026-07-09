@@ -1,0 +1,81 @@
+html {
+    font-size: 1px;
+}
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: transparent;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+#main-gun-root {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 26rem;
+    padding: 4rem 8rem;
+    border: 1rem solid rgba(255, 255, 255, 0.45);
+    border-radius: 2rem;
+    background: rgba(0, 0, 0, 0.28);
+    overflow: hidden;
+    color: #FFFFFF;
+    font-family: Arial, "Helvetica Neue", Helvetica, sans-serif;
+    font-size: 14rem;
+    font-weight: 400;
+    line-height: 1;
+    white-space: nowrap;
+    text-align: center;
+    text-shadow: 1rem 1rem 2rem rgba(0, 0, 0, 0.85);
+    user-select: none;
+}
+
+#main-gun-root.main-gun-hidden {
+    visibility: hidden;
+}
+
+#main-gun-content {
+    flex: 0 0 auto;
+    display: inline-block;
+    white-space: nowrap;
+}
+
+#main-gun-label,
+#main-gun-remaining {
+    display: inline;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+#main-gun-label {
+    color: #FFFFFF;
+    font-size: 22rem;
+    font-weight: bold;
+}
+
+#main-gun-label.main-gun-label-done {
+    color: #a5de76;
+}
+
+#main-gun-label.main-gun-label-fail {
+    color: #ee6868 ;
+}
+
+#main-gun-label::after {
+    content: ":";
+}
+
+#main-gun-remaining {
+    margin-left: 8rem;
+    color: #FFFFFF;
+    font-size: 18rem;
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+}
