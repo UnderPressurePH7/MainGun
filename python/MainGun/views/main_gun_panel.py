@@ -144,6 +144,8 @@ class MainGunPanel(object):
         self._destroyed = False
         self._isInitialized = False
         self._isVisible = False
+        self._extendedInfo = False
+        self._displayMode = g_configFile.displayMode
         self._state = self._defaultState()
         self._offset = list(g_configFile.panelOffset)
         self._lastSavedOffset = tuple(self._offset)
@@ -180,8 +182,10 @@ class MainGunPanel(object):
         self._calculateScaleFactor()
         self._syncPositionFromOffset()
         self._isVisible = g_battleStateEvents.visible
+        self._extendedInfo = g_battleStateEvents.extendedInfo
         g_battleStateEvents.onGUIVisibility += self._onGUIVisibilityChanged
         g_battleStateEvents.onScaleChanged += self._onInterfaceScaleChanged
+        g_battleStateEvents.onExtendedInfo += self._onExtendedInfoChanged
         g_battleStateEvents.onBattleClosed += self._onBattleClosed
         self._isInitialized = True
         self._ensureWindow()
@@ -199,6 +203,7 @@ class MainGunPanel(object):
         try:
             g_battleStateEvents.onGUIVisibility -= self._onGUIVisibilityChanged
             g_battleStateEvents.onScaleChanged -= self._onInterfaceScaleChanged
+            g_battleStateEvents.onExtendedInfo -= self._onExtendedInfoChanged
             g_battleStateEvents.onBattleClosed -= self._onBattleClosed
         except Exception:
             pass
@@ -208,6 +213,7 @@ class MainGunPanel(object):
         self._dropWindow()
         self._state = self._defaultState()
         self._isVisible = False
+        self._extendedInfo = False
         logger.debug('[MainGunPanel] Battle ended')
 
     def updateState(self, state):
@@ -223,6 +229,8 @@ class MainGunPanel(object):
     def buildPayload(self):
         return json.dumps({
             'visible': bool(self._isVisible),
+            'extendedInfo': bool(self._extendedInfo),
+            'displayMode': int(self._displayMode),
             'scale': self._scaleFactor,
             'size': {'w': self._size[0], 'h': self._size[1]},
             'state': self._state,
@@ -361,7 +369,19 @@ class MainGunPanel(object):
             self._move()
 
     def _handleCommand(self, name, value):
-        if name == 'onSize':
+        if name == 'onModeChanged':
+            try:
+                displayMode = int(value)
+            except Exception:
+                return
+            if displayMode not in (1, 2) or displayMode == self._displayMode:
+                return
+            self._displayMode = displayMode
+            g_configFile.displayMode = displayMode
+            g_configFile.save()
+            self.publish()
+            logger.debug('[MainGunPanel] Display mode changed: %s', displayMode)
+        elif name == 'onSize':
             try:
                 parts = str(value).split('x')
                 width = max(1, int(float(parts[0])))
@@ -475,6 +495,11 @@ class MainGunPanel(object):
         if self._isInitialized:
             self._calculateScaleFactor()
             self._syncPositionFromOffset()
+            self.publish()
+
+    def _onExtendedInfoChanged(self, isDown):
+        if self._isInitialized:
+            self._extendedInfo = bool(isDown)
             self.publish()
 
     def _calculateScaleFactor(self):

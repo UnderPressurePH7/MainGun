@@ -3,8 +3,12 @@
 
     var root = document.getElementById('main-gun-root');
     var contentEl = document.getElementById('main-gun-content');
+    var panelEl = document.getElementById('main-gun-panel');
     var labelEl = document.getElementById('main-gun-label');
     var remainingEl = document.getElementById('main-gun-remaining');
+    var statusEl = document.getElementById('main-gun-status');
+    var selectorEl = document.getElementById('main-gun-mode-selector');
+    var modeButtons = selectorEl.getElementsByClassName('main-gun-mode-button');
     var payload = {};
     var lastPayload = null;
     var lastReportedSize = null;
@@ -35,6 +39,11 @@
         return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
     }
 
+
+    function setClass(element, name, enabled) {
+        if (enabled) element.classList.add(name);
+        else element.classList.remove(name);
+    }
     function clientSize() {
         try {
             if (window.viewEnv && viewEnv.getClientSizePx) {
@@ -83,18 +92,30 @@
         var rem = remScale(payload.scale);
         var paddingX = 8 * rem * 2;
         var borderX = 1 * rem * 2;
+        var displayMode = Math.max(1, Math.min(2, toInt(payload.displayMode, 1)));
+        var extended = !!payload.extendedInfo;
 
-        // The whole caption lives on one inline line inside #main-gun-content,
-        // an inline-block that hugs its content regardless of the container
+        // The content is one inline line that hugs its contents regardless of
         // width. Measure it and size the panel box around it explicitly, since
         // Gameface does not shrink-wrap the flex container on its own.
-        var contentWidth = contentEl.getBoundingClientRect().width;
-        var width = Math.ceil(contentWidth + paddingX + borderX);
+        var contentRect = contentEl.getBoundingClientRect();
+        var contentWidth = contentRect.width;
+        var panelWidth = Math.ceil(contentWidth + paddingX + borderX);
+        var panelHeight = Math.ceil(Math.max(panelEl.getBoundingClientRect().height,
+            displayMode === 2 ? 42 * rem : 26 * rem));
+        var selectorWidth = 53 * rem;
+        var selectorHeight = 25 * rem;
+        var selectorGap = 5 * rem;
+        var width = Math.ceil(Math.max(panelWidth, extended ? selectorWidth : 0));
+        var height = Math.ceil(panelHeight + (extended ? selectorGap + selectorHeight : 0));
         root.style.width = width + 'px';
-        void root.offsetWidth;
+        root.style.height = height + 'px';
+        panelEl.style.width = panelWidth + 'px';
+        selectorEl.style.left = Math.max(0, Math.round((width - selectorWidth) * 0.5)) + 'px';
+        selectorEl.style.top = Math.round(panelHeight + selectorGap) + 'px';
+        void root.offsetHeight;
 
-        var rect = root.getBoundingClientRect();
-        reportSize(rect.width, rect.height);
+        reportSize(width, height);
     }
 
     function readPayload() {
@@ -117,21 +138,37 @@
         var scale = remScale(payload.scale);
         var obtained = !!state.mainGunObtained;
         var dead = !!state.playerDead;
-        var remainingVal = toInt(state.remaining, 0);
+        var failed = dead && !obtained;
+        var displayMode = Math.max(1, Math.min(2, toInt(payload.displayMode, 1)));
+        var extended = !!payload.extendedInfo;
 
         document.documentElement.style.fontSize = scale + 'px';
         labelEl.textContent = l10n.mainGun || 'Main Gun';
         remainingEl.textContent = formatNumber(state.remaining);
+        setClass(root, 'main-gun-mode-icon', displayMode === 2);
+        setClass(root, 'main-gun-extended', extended);
+        setClass(statusEl, 'main-gun-status-done', obtained);
+        setClass(statusEl, 'main-gun-status-fail', failed);
 
         if (obtained) {
             labelEl.classList.add('main-gun-label-done');
             labelEl.classList.remove('main-gun-label-fail');
-        } else if (dead && remainingVal > 0) {
+            setClass(remainingEl, 'main-gun-remaining-done', displayMode === 2);
+            remainingEl.classList.remove('main-gun-remaining-fail');
+        } else if (failed) {
             labelEl.classList.add('main-gun-label-fail');
             labelEl.classList.remove('main-gun-label-done');
+            setClass(remainingEl, 'main-gun-remaining-fail', displayMode === 2);
+            remainingEl.classList.remove('main-gun-remaining-done');
         } else {
             labelEl.classList.remove('main-gun-label-done');
             labelEl.classList.remove('main-gun-label-fail');
+            remainingEl.classList.remove('main-gun-remaining-done');
+            remainingEl.classList.remove('main-gun-remaining-fail');
+        }
+
+        for (var i = 0; i < modeButtons.length; i++) {
+            setClass(modeButtons[i], 'active', toInt(modeButtons[i].getAttribute('data-mode'), 0) === displayMode);
         }
 
         if (payload.visible === false) {
@@ -151,6 +188,11 @@
     }
 
     function initialize() {
+        for (var i = 0; i < modeButtons.length; i++) {
+            modeButtons[i].addEventListener('click', function () {
+                sendCmd('onModeChanged', this.getAttribute('data-mode'));
+            });
+        }
         render();
         if (window.engine) {
             window.engine.on('viewEnv.onDataChanged', render);

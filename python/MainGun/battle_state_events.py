@@ -16,16 +16,22 @@ class BattleStateEvents(object):
     def interfaceScale(self):
         return self._interfaceScale
 
+    @property
+    def extendedInfo(self):
+        return self._extendedInfo
+
     def __init__(self):
         self._hiddenByInterface = False
         self._hiddenByStatsPopup = False
         self._hiddenByKillCam = False
         self._interfaceScale = 1.0
+        self._extendedInfo = False
         self._killCamCtrl = None
         self.onBattleLoaded = Event.SafeEvent()
         self.onBattleClosed = Event.SafeEvent()
         self.onGUIVisibility = Event.SafeEvent()
         self.onScaleChanged = Event.SafeEvent()
+        self.onExtendedInfo = Event.SafeEvent()
         self._subscribeAppLoader()
         self._subscribeEventBus()
 
@@ -50,11 +56,18 @@ class BattleStateEvents(object):
                     g_eventBus.removeListener(eventType, self._onToggleFullStats, scope=EVENT_BUS_SCOPE.BATTLE)
             except Exception:
                 pass
+        try:
+            eventType = getattr(GameEvent, 'SHOW_EXTENDED_INFO', None)
+            if eventType is not None:
+                g_eventBus.removeListener(eventType, self._onExtendedInfo, scope=EVENT_BUS_SCOPE.BATTLE)
+        except Exception:
+            pass
         self._unsubscribeKillCam()
         self.onBattleLoaded.clear()
         self.onBattleClosed.clear()
         self.onGUIVisibility.clear()
         self.onScaleChanged.clear()
+        self.onExtendedInfo.clear()
 
     def _subscribeAppLoader(self):
         try:
@@ -80,12 +93,20 @@ class BattleStateEvents(object):
             except Exception:
                 pass
 
+        try:
+            eventType = getattr(GameEvent, 'SHOW_EXTENDED_INFO', None)
+            if eventType is not None:
+                g_eventBus.addListener(eventType, self._onExtendedInfo, scope=EVENT_BUS_SCOPE.BATTLE)
+        except Exception:
+            pass
+
     def _onGUISpaceEntered(self, spaceID):
         from skeletons.gui.app_loader import GuiGlobalSpaceID
         if spaceID == GuiGlobalSpaceID.BATTLE:
             self._hiddenByInterface = False
             self._hiddenByStatsPopup = False
             self._hiddenByKillCam = False
+            self._extendedInfo = False
             self._handleBattleLoad()
             self.onBattleLoaded()
 
@@ -111,6 +132,12 @@ class BattleStateEvents(object):
         if self._interfaceScale != scale:
             self._interfaceScale = scale
             self.onScaleChanged(scale)
+
+    def _onExtendedInfo(self, event):
+        isDown = bool(event.ctx.get('isDown', False))
+        if isDown != self._extendedInfo:
+            self._extendedInfo = isDown
+            self.onExtendedInfo(isDown)
 
     def _handleBattleLoad(self):
         try:
