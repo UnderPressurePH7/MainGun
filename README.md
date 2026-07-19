@@ -2,7 +2,7 @@
 
 # MainGun
 
-<img align="left" src="https://shields.io/badge/version-0.0.1-blue">
+<img align="left" src="https://shields.io/badge/version-0.0.2-blue">
 <br>
 
 ### Requirements:
