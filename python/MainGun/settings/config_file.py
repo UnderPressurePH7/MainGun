@@ -12,9 +12,10 @@ except AttributeError:
 
 _CACHE_DIR = os.path.normpath(os.path.join(os.path.dirname(_prefsFilePath), 'mods', 'maingun'))
 _POS_FILE = os.path.join(_CACHE_DIR, 'pos.dat')
+
 _POS_VERSION = 1
 
-DEFAULT_CONFIG = {'panelOffset': [0, 0], 'displayMode': 1}
+DEFAULT_CONFIG = {'panelOffset': [300, 30], 'displayMode': 1}
 
 
 class ConfigFile(object):
@@ -39,7 +40,7 @@ class ConfigFile(object):
             if not raw:
                 return True
             data = json.loads(raw)
-            if not isinstance(data, dict) or data.get('version') != _POS_VERSION:
+            if not isinstance(data, dict) or int(data.get('version', 0)) != _POS_VERSION:
                 return True
             offset = data.get('panelOffset', DEFAULT_CONFIG['panelOffset'])
             self.panelOffset = [int(offset[0]), int(offset[1])]

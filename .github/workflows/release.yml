@@ -14,7 +14,7 @@ on:
       version:
         description: 'Mod Version'
         required: true
-        default: '0.0.2'
+        default: '0.0.3'
       mod_id:
         description: 'Mod ID (e.g., me.author.modname)'
         required: true

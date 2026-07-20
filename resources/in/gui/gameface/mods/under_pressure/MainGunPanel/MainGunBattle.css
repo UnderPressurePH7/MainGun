@@ -4,6 +4,9 @@ html {
 
 html,
 body {
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-start;
     width: 100%;
     height: 100%;
     margin: 0;
@@ -14,11 +17,15 @@ body {
 
 * {
     box-sizing: border-box;
+    min-width: 0;
+    min-height: 0;
 }
 
 #main-gun-root {
     position: relative;
-    display: block;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     width: 1rem;
     height: 1rem;
     overflow: hidden;
@@ -41,7 +48,6 @@ body {
     font-weight: 400;
     line-height: 1;
     white-space: nowrap;
-    text-align: center;
     text-shadow: 1rem 1rem 2rem rgba(0, 0, 0, 0.85);
 }
 
@@ -51,16 +57,17 @@ body {
 
 #main-gun-content {
     flex: 0 0 auto;
-    display: inline-block;
+    display: flex;
+    align-items: center;
     white-space: nowrap;
 }
 
 #main-gun-label,
 #main-gun-icon,
 #main-gun-remaining {
-    display: inline;
+    display: flex;
+    align-items: center;
     white-space: nowrap;
-    vertical-align: middle;
 }
 
 #main-gun-status {
@@ -68,10 +75,9 @@ body {
     width: 20rem;
     height: 20rem;
     margin-right: 6rem;
-    vertical-align: middle;
 }
 
-#main-gun-status svg {
+.main-gun-status-svg {
     display: none;
     width: 100%;
     height: 100%;
@@ -82,37 +88,34 @@ body {
     stroke-linejoin: round;
 }
 
-#main-gun-status.main-gun-status-done {
-    display: inline-block;
+#main-gun-status.main-gun-status-visible {
+    display: flex;
 }
 
-#main-gun-status.main-gun-status-done .main-gun-status-check {
-    display: block;
-    stroke: #a5de76;
+.main-gun-status-svg-visible {
+    display: flex;
 }
 
-#main-gun-status.main-gun-status-fail {
-    display: inline-block;
-}
-
-#main-gun-status.main-gun-status-fail .main-gun-status-cross {
-    display: block;
-    stroke: #ee6868;
-}
+.main-gun-status-check { stroke: #a5de76; }
+.main-gun-status-cross { stroke: #ee6868; }
 
 #main-gun-icon {
     display: none;
     width: 32rem;
     height: 32rem;
-    object-fit: contain;
 }
 
-#main-gun-root.main-gun-mode-icon #main-gun-label {
+#main-gun-label.main-gun-label-hidden {
     display: none;
 }
 
-#main-gun-root.main-gun-mode-icon #main-gun-icon {
-    display: inline-block;
+.main-gun-icon-visible {
+    display: flex !important;
+    margin-right: 8rem;
+}
+
+.main-gun-remaining-icon-mode {
+    margin-left: 0;
 }
 
 #main-gun-label {
@@ -129,16 +132,12 @@ body {
     color: #ee6868 ;
 }
 
-#main-gun-label::after {
-    content: ":";
-}
 
 #main-gun-remaining {
     margin-left: 8rem;
     color: #FFFFFF;
     font-size: 18rem;
     font-weight: bold;
-    font-variant-numeric: tabular-nums;
 }
 
 #main-gun-remaining.main-gun-remaining-done {
@@ -157,13 +156,16 @@ body {
     white-space: nowrap;
 }
 
-#main-gun-root.main-gun-extended #main-gun-mode-selector {
-    display: block;
+.main-gun-mode-selector-visible {
+    display: flex !important;
 }
 
 .main-gun-mode-button {
     position: absolute;
     top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 25rem;
     height: 25rem;
     border: 1rem solid rgba(107, 125, 154, 0.5);
@@ -172,16 +174,14 @@ body {
     color: #9da7b7;
     cursor: pointer;
     font-size: 15rem;
-    line-height: 23rem;
-    text-align: center;
     text-shadow: 1rem 1rem 2rem rgba(0, 0, 0, 0.85);
 }
 
-.main-gun-mode-button:nth-child(1) {
+.main-gun-mode-button-one {
     left: 0;
 }
 
-.main-gun-mode-button:nth-child(2) {
+.main-gun-mode-button-two {
     left: 28rem;
 }
 

@@ -16,9 +16,10 @@ except Exception:
 
 from ..battle_state_events import g_battleStateEvents
 from ..settings import g_configFile, getTranslation
-from ..utils import logger
+from ..utils import logger, cancelCallbackSafe as _cancelCallbackSafe, screenResolution as _screenResolution, cursorPixels as _cursorPixels
 
 try:
+    import openwg_gameface
     from openwg_gameface import ModDynAccessor, manager as gamefaceResMap, on_ready as gamefaceOnReady
     from frameworks.wulf import ViewFlags, ViewModel, ViewSettings, WindowFlags, WindowLayer, WindowStatus
     from gui.impl.gui_decorators import args2params
@@ -27,6 +28,7 @@ try:
     from skeletons.gui.impl import IGuiLoader
     _GF_OK = True
 except Exception:
+    openwg_gameface = None
     ModDynAccessor = gamefaceResMap = gamefaceOnReady = None
     ViewFlags = ViewModel = ViewSettings = WindowFlags = WindowLayer = WindowStatus = None
     ViewImpl = WindowImpl = args2params = None
@@ -35,48 +37,31 @@ except Exception:
 
 LAYOUT_KEY = 'mods/under_pressure/MainGunBattle/layoutID'
 VIEW_NAME = 'MainGunBattle'
-BASE_SCREEN = (1920, 1080)
 BOUNDARY_GAP = 0
 DRAG_THRESHOLD = 20
+_gamefaceReadyHookBound = False
 
 
 def registerGamefaceComponents():
-    logger.debug('[MainGunPanel] Gameface components use dynamic res_map registration')
+    global _gamefaceReadyHookBound
+    if not _GF_OK:
+        logger.error('[MainGunPanel] openwg_gameface is not installed; UI disabled')
+        return
+    if _gamefaceReadyHookBound:
+        return
+    _gamefaceReadyHookBound = True
+
+    @gamefaceOnReady
+    def _onResMapReady():
+        try:
+            resolved = dict(openwg_gameface.res_ids_by_mask('mods/under_pressure/'))
+            logger.debug('[MainGunPanel] res_map ready, %d layouts resolved', len(resolved))
+        except Exception:
+            logger.exception('[MainGunPanel] res_map validation failed')
 
 
 def unregisterGamefaceComponents():
     logger.debug('[MainGunPanel] Gameface res_map unregistration')
-
-
-def _cancelCallbackSafe(cbid):
-    try:
-        if cbid is not None:
-            BigWorld.cancelCallback(cbid)
-    except Exception:
-        pass
-
-
-def _screenResolution():
-    try:
-        if GUI is not None:
-            width, height = GUI.screenResolution()[:2]
-            if width > 0 and height > 0:
-                return (int(width), int(height))
-    except Exception:
-        pass
-    try:
-        width, height = BigWorld.screenWidth(), BigWorld.screenHeight()
-        if width > 0 and height > 0:
-            return (int(width), int(height))
-    except Exception:
-        pass
-    return BASE_SCREEN
-
-
-def _cursorPixels(cursor):
-    normX, normY = cursor.position
-    screenWidth, screenHeight = _screenResolution()
-    return (int((normX + 1.0) * 0.5 * screenWidth), int((1.0 - normY) * 0.5 * screenHeight))
 
 
 if _GF_OK:
@@ -103,17 +88,20 @@ if _GF_OK:
         def __init__(self, owner):
             self._owner = owner
             model = _MainGunPanelModel(owner.buildPayload())
-            owner._setModel(model, publish=False)
             settings = ViewSettings(layoutID=_GF_LAYOUT(), flags=ViewFlags.VIEW, model=model)
             super(_MainGunPanelViewImpl, self).__init__(settings)
+            owner._onViewCreated(model)
 
         def _getEvents(self):
             model = self.getViewModel()
             return (
-                (model.onReady, self._owner._onReady),
+                (model.onReady, self._onReady),
                 (model.onDebug, self._onDebug),
                 (model.onCmd, self._onCmd),
             )
+
+        def _onReady(self, *args):
+            self._owner._onReady()
 
         @args2params(str)
         def _onDebug(self, message):
@@ -121,12 +109,15 @@ if _GF_OK:
 
         @args2params(str, str)
         def _onCmd(self, name, value):
-            self._owner._handleCommand(name, value)
+            try:
+                self._owner._handleCommand(name, value)
+            except Exception:
+                logger.exception('[MainGunPanel] command %s failed', name)
 
         def _finalize(self):
-            self._owner._setModel(None)
+            owner = self._owner
             super(_MainGunPanelViewImpl, self)._finalize()
-            self._owner._onViewFinalized()
+            owner._onViewFinalized()
 
     class _MainGunPanelWindow(WindowImpl):
 
@@ -141,7 +132,7 @@ class MainGunPanel(object):
         self._model = None
         self._nativeReady = False
         self._token = 0
-        self._destroyed = False
+        self._destroyed = True
         self._isInitialized = False
         self._isVisible = False
         self._extendedInfo = False
@@ -153,9 +144,11 @@ class MainGunPanel(object):
         self._positionChanged = False
         self._scaleFactor = 1.0
         self._size = (180, 26)
+        self._panelSize = (180, 26)
         self._viewSizeReported = False
         self._guiResetterBound = False
         self._resizeCallbackID = None
+        self._viewSizeSyncCallbackID = None
         self._dragCallbackID = None
         self._dragging = False
         self._mouseWasDown = False
@@ -189,8 +182,6 @@ class MainGunPanel(object):
         g_battleStateEvents.onBattleClosed += self._onBattleClosed
         self._isInitialized = True
         self._ensureWindow()
-        self._startDragTicker()
-        self._bindGuiResetter()
         logger.debug('[MainGunPanel] Battle started')
 
     def _onBattleClosed(self):
@@ -200,6 +191,7 @@ class MainGunPanel(object):
         if not self._isInitialized:
             return
         self._isInitialized = False
+        self._destroyed = True
         try:
             g_battleStateEvents.onGUIVisibility -= self._onGUIVisibilityChanged
             g_battleStateEvents.onScaleChanged -= self._onInterfaceScaleChanged
@@ -209,6 +201,8 @@ class MainGunPanel(object):
             pass
         self._stopDragTicker()
         self._unbindGuiResetter()
+        _cancelCallbackSafe(self._viewSizeSyncCallbackID)
+        self._viewSizeSyncCallbackID = None
         self._savePositionIfChanged()
         self._dropWindow()
         self._state = self._defaultState()
@@ -237,10 +231,8 @@ class MainGunPanel(object):
             'l10n': {'mainGun': getTranslation('mainGun')}
         }, ensure_ascii=False)
 
-    def _setModel(self, model, publish=True):
+    def _onViewCreated(self, model):
         self._model = model
-        if publish:
-            self.publish()
 
     def publish(self):
         if self._model is None:
@@ -250,19 +242,27 @@ class MainGunPanel(object):
             with self._model.transaction() as model:
                 model.setPayload(payload)
         except Exception:
-            pass
-        self._move()
+            logger.exception('[MainGunPanel] payload publish failed')
 
     def _onReady(self, *args):
+        if self._destroyed or not self._isInitialized:
+            return
         self._nativeReady = True
         self.publish()
+        self._syncPositionFromOffset()
         self._move()
+        self._startDragTicker()
+        self._bindGuiResetter()
 
     def _onViewFinalized(self):
         self._window = None
         self._model = None
         self._nativeReady = False
         self._token += 1
+        self._stopDragTicker()
+        self._unbindGuiResetter()
+        _cancelCallbackSafe(self._viewSizeSyncCallbackID)
+        self._viewSizeSyncCallbackID = None
         if self._isInitialized and not self._destroyed:
             BigWorld.callback(0.1, self._ensureWindow)
 
@@ -274,7 +274,7 @@ class MainGunPanel(object):
             return
         self._token += 1
         token = self._token
-        if gamefaceResMap.isResMapValidated:
+        if getattr(gamefaceResMap, 'isResMapValidated', False):
             self._loadWindow(token)
         else:
             gamefaceOnReady(lambda: self._loadWindow(token))
@@ -289,10 +289,13 @@ class MainGunPanel(object):
         if parent is None or parent.proxy is None or parent.windowStatus != WindowStatus.LOADED:
             if retry < 100:
                 BigWorld.callback(0.1, lambda: self._loadWindow(token, retry + 1))
+            else:
+                logger.error('[MainGunPanel] main Wulf window never became ready')
             return
         try:
             self._window = _MainGunPanelWindow(_MainGunPanelViewImpl(self), parent)
             self._window.load()
+            logger.debug('[MainGunPanel] Gameface window loading')
         except Exception:
             logger.exception('[MainGunPanel] Failed to load Gameface window')
             self._window = None
@@ -336,20 +339,27 @@ class MainGunPanel(object):
             return (1.0, 1.0)
         return (scaleW, scaleH)
 
-    def _anchor(self):
-        screenWidth, _ = _screenResolution()
-        yPos = int(round(70.0 * max(0.5, min(2.5, float(self._scaleFactor or 1.0)))))
-        return (int(screenWidth * 0.5 - self._size[0] * 0.5), yPos)
-
     def _syncPositionFromOffset(self):
-        anchorX, anchorY = self._anchor()
-        self._position[0] = int(anchorX + self._offset[0])
-        self._position[1] = int(anchorY + self._offset[1])
+        # Offset is stored relative to the nearest screen corner:
+        # value >= 0 means distance from the left/top edge,
+        # value < 0 means distance from the right/bottom edge.
+        # A panel dragged next to the bottom-right damage panel therefore
+        # follows it exactly like moe_bloody's panel does, while a panel
+        # dragged to the top HUD stays glued to the top on windowed <->
+        # fullscreen switches instead of moving by the height difference.
+        screenWidth, screenHeight = _screenResolution()
+        offsetX, offsetY = self._offset[0], self._offset[1]
+        self._position[0] = int(offsetX if offsetX >= 0 else screenWidth + offsetX)
+        self._position[1] = int(offsetY if offsetY >= 0 else screenHeight + offsetY)
         self._clampPosition()
 
     def _syncOffsetFromPosition(self):
-        anchorX, anchorY = self._anchor()
-        self._offset = [int(self._position[0] - anchorX), int(self._position[1] - anchorY)]
+        screenWidth, screenHeight = _screenResolution()
+        xPos, yPos = int(self._position[0]), int(self._position[1])
+        width, height = self._size
+        offsetX = xPos if (xPos + width * 0.5) < screenWidth * 0.5 else xPos - screenWidth
+        offsetY = yPos if (yPos + height * 0.5) < screenHeight * 0.5 else yPos - screenHeight
+        self._offset = [int(offsetX), int(offsetY)]
 
     def _clampPosition(self):
         screenWidth, screenHeight = _screenResolution()
@@ -386,13 +396,24 @@ class MainGunPanel(object):
                 parts = str(value).split('x')
                 width = max(1, int(float(parts[0])))
                 height = max(1, int(float(parts[1])))
+                panelWidth = max(1, int(float(parts[2]))) if len(parts) > 2 else width
+                panelHeight = max(1, int(float(parts[3]))) if len(parts) > 3 else height
             except Exception:
                 return
             self._viewSizeReported = True
-            if (width, height) != tuple(self._size):
+            sizeChanged = (width, height) != tuple(self._size) or (panelWidth, panelHeight) != tuple(self._panelSize)
+            if sizeChanged:
                 self._size = (width, height)
-                self._syncPositionFromOffset()
-                self._move()
+                self._panelSize = (panelWidth, panelHeight)
+                _cancelCallbackSafe(self._viewSizeSyncCallbackID)
+                self._viewSizeSyncCallbackID = BigWorld.callback(0.0, self._syncAfterViewSize)
+
+    def _syncAfterViewSize(self):
+        self._viewSizeSyncCallbackID = None
+        if self._destroyed or self._window is None:
+            return
+        self._syncPositionFromOffset()
+        self._move()
 
     def _bindGuiResetter(self):
         if self._guiResetterBound or g_guiResetters is None:
@@ -458,6 +479,9 @@ class MainGunPanel(object):
             self._dragging = False
             self._mouseWasDown = False
             return
+        if not ((mouseDown and not self._mouseWasDown) or self._dragging):
+            self._mouseWasDown = mouseDown
+            return
         cursorPos = _cursorPixels(cursor)
         if mouseDown and not self._mouseWasDown and self._isCursorOver(cursorPos):
             self._dragging = True
@@ -476,14 +500,13 @@ class MainGunPanel(object):
 
     def _finishDrag(self):
         self._dragging = False
-        self._syncOffsetFromPosition()
         self._savePositionIfChanged()
 
     def _isCursorOver(self, cursorPos):
         if not self._isVisible:
             return False
         left, top = self._position[0], self._position[1]
-        width, height = self._size
+        width, height = self._panelSize
         return left <= cursorPos[0] <= left + width and top <= cursorPos[1] <= top + height
 
     def _onGUIVisibilityChanged(self, isVisible):
@@ -494,8 +517,9 @@ class MainGunPanel(object):
     def _onInterfaceScaleChanged(self, scale):
         if self._isInitialized:
             self._calculateScaleFactor()
-            self._syncPositionFromOffset()
             self.publish()
+            self._syncPositionFromOffset()
+            self._move()
 
     def _onExtendedInfoChanged(self, isDown):
         if self._isInitialized:

@@ -6,13 +6,21 @@
     <link rel="stylesheet" href="MainGunBattle.css">
 </head>
 <body>
-    <div id="main-gun-root">
+    <div id="main-gun-root" class="main-gun-hidden">
         <div id="main-gun-panel">
-            <span id="main-gun-content"><span id="main-gun-status"><svg class="main-gun-status-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"></path></svg><svg class="main-gun-status-cross" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"></path></svg></span><span id="main-gun-label"></span><img id="main-gun-icon" src="img://gui/maps/icons/achievement/x300x300/mainGun.png"><span id="main-gun-remaining"></span></span>
+            <div id="main-gun-content">
+                <div id="main-gun-status">
+                    <svg class="main-gun-status-svg main-gun-status-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"></path></svg>
+                    <svg class="main-gun-status-svg main-gun-status-cross" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+                </div>
+                <div id="main-gun-label"></div>
+                <img id="main-gun-icon" src="img://gui/maps/icons/achievement/x300x300/mainGun.png">
+                <div id="main-gun-remaining"></div>
+            </div>
         </div>
         <div id="main-gun-mode-selector">
-            <div class="main-gun-mode-button" data-mode="1">1</div>
-            <div class="main-gun-mode-button" data-mode="2">2</div>
+            <div class="main-gun-mode-button main-gun-mode-button-one" data-mode="1">1</div>
+            <div class="main-gun-mode-button main-gun-mode-button-two" data-mode="2">2</div>
         </div>
     </div>
     <script defer src="MainGunBattle.js"></script>

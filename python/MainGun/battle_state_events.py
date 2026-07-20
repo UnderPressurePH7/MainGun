@@ -145,7 +145,7 @@ class BattleStateEvents(object):
             from skeletons.account_helpers.settings_core import ISettingsCore
             from skeletons.gui.battle_session import IBattleSessionProvider
             settingsCore = dependency.instance(ISettingsCore)
-            self._interfaceScale = round(settingsCore.interfaceScale.get(), 1)
+            self._interfaceScale = float(settingsCore.interfaceScale.get())
             self._unsubscribeKillCam()
             sessionProvider = dependency.instance(IBattleSessionProvider)
             killCamCtrl = getattr(sessionProvider.shared, 'killCamCtrl', None)

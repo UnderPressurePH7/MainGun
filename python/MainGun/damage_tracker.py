@@ -3,9 +3,10 @@ import time
 import BigWorld
 import constants
 from Avatar import PlayerAvatar
+from PlayerEvents import g_playerEvents
 from gui.battle_control.battle_constants import FEEDBACK_EVENT_ID
 
-from .utils import logger
+from .utils import logger, cancelCallbackSafe
 
 try:
     import Vehicle as VehicleModule
@@ -33,8 +34,12 @@ class DamageTracker(object):
         self._playerDead = False
         self._arena = None
         self._killHooked = False
+        self._damageEventIDs = None
+        self._lastPublished = None
 
     def start(self):
+        if self._started:
+            return
         self._tryStartBattle(0)
 
     def stop(self):
@@ -53,29 +58,30 @@ class DamageTracker(object):
         self._damageByVehicle = {}
         self._recentDamage = []
         self._playerDead = False
+        self._lastPublished = None
 
     def destroy(self):
         self.stop()
 
     def _cancelCallbacks(self):
-        for cbid in (self._startCallbackID, self._recalcCallbackID):
-            try:
-                if cbid is not None:
-                    BigWorld.cancelCallback(cbid)
-            except Exception:
-                pass
+        cancelCallbackSafe(self._startCallbackID)
+        cancelCallbackSafe(self._recalcCallbackID)
         self._startCallbackID = None
         self._recalcCallbackID = None
 
     def _tryStartBattle(self, attempt):
         self._startCallbackID = None
-        if self._startBattleImpl():
+        allowed = self._isAllowedBattle()
+        if allowed is False:
+            logger.debug('[MainGun] battle skipped: only random battles are supported')
+            return
+        if allowed is True and self._startBattleImpl():
             return
         if attempt < 20:
             self._startCallbackID = BigWorld.callback(0.5, lambda: self._tryStartBattle(attempt + 1))
 
     def _startBattleImpl(self):
-        if not self._isAllowedBattle():
+        if self._isAllowedBattle() is not True:
             return False
         self._captureContext()
         if self._playerVehicleID is None or self._playerTeam is None:
@@ -89,6 +95,7 @@ class DamageTracker(object):
         self._damageByVehicle = {}
         self._recentDamage = []
         self._playerDead = False
+        self._lastPublished = None
         self._initHealthMap()
         self._started = True
         self._panel.onBattleStart()
@@ -104,16 +111,18 @@ class DamageTracker(object):
             player = BigWorld.player()
             arena = getattr(player, 'arena', None)
             if arena is None:
-                return False
+                return None
             guiType = getattr(arena, 'guiType', None)
+            if guiType is None:
+                return None
             allowed = []
-            for attrName in ('RANDOM', 'MAPBOX'):
+            for attrName in ('RANDOM',):
                 value = getattr(constants.ARENA_GUI_TYPE, attrName, None)
                 if value is not None:
                     allowed.append(value)
             return guiType in tuple(allowed)
         except Exception:
-            return False
+            return None
 
     def _captureContext(self):
         try:
@@ -161,17 +170,18 @@ class DamageTracker(object):
         return team is not None and self._playerTeam is not None and team == self._playerTeam
 
     def _maxHealthForVehicle(self, vehicleID):
-        for vid, data in self._vehicleItems():
-            try:
-                if int(vid) != int(vehicleID):
-                    continue
-                hp = self._vehicleDataGet(data, 'maxHealth', 0) or self._vehicleDataGet(data, 'maxHp', 0)
-                if not hp:
-                    hp = self._vehicleDataGet(data, 'health', 0)
-                return int(hp or 0)
-            except Exception:
-                continue
-        return 0
+        try:
+            arena = getattr(BigWorld.player(), 'arena', None)
+            vehicles = getattr(arena, 'vehicles', None) if arena is not None else None
+            data = vehicles.get(int(vehicleID)) if hasattr(vehicles, 'get') else None
+            if data is None:
+                return 0
+            hp = self._vehicleDataGet(data, 'maxHealth', 0) or self._vehicleDataGet(data, 'maxHp', 0)
+            if not hp:
+                hp = self._vehicleDataGet(data, 'health', 0)
+            return int(hp or 0)
+        except Exception:
+            return 0
 
     def _calcEnemyHP(self):
         total = 0
@@ -359,12 +369,14 @@ class DamageTracker(object):
         return None
 
     def _damageEventTypes(self):
-        result = []
-        for name in ('PLAYER_DAMAGED_HP_ENEMY', 'PLAYER_DAMAGED_HP_ENEMY_BY_EXPLOSION', 'PLAYER_DAMAGED_HP_ENEMY_BY_FIRE'):
-            value = getattr(FEEDBACK_EVENT_ID, name, None)
-            if value is not None and value not in result:
-                result.append(value)
-        return result
+        if self._damageEventIDs is None:
+            result = []
+            for name in ('PLAYER_DAMAGED_HP_ENEMY', 'PLAYER_DAMAGED_HP_ENEMY_BY_EXPLOSION', 'PLAYER_DAMAGED_HP_ENEMY_BY_FIRE'):
+                value = getattr(FEEDBACK_EVENT_ID, name, None)
+                if value is not None and value not in result:
+                    result.append(value)
+            self._damageEventIDs = tuple(result)
+        return self._damageEventIDs
 
     def _processFeedbackOne(self, item):
         eventType = None
@@ -518,6 +530,10 @@ class DamageTracker(object):
         remaining = max(0, int(self._need) - int(self._current))
         completed = self._need > 0 and self._current >= self._need
         leader = self._isTeamDamageLeader()
+        snapshot = (int(self._current), int(self._need), bool(completed), bool(leader), bool(self._playerDead))
+        if snapshot == self._lastPublished:
+            return
+        self._lastPublished = snapshot
         self._panel.updateState({
             'current': int(self._current),
             'need': int(self._need),
@@ -530,8 +546,7 @@ class DamageTracker(object):
 
 
 g_tracker = None
-_origEnterWorld = None
-_origBecomeNonPlayer = None
+_playerEventsBound = False
 _origHealthMethods = {}
 _origVehicleHealthMethods = {}
 
@@ -630,64 +645,56 @@ def _uninstallHealthHooks():
     _origVehicleHealthMethods.clear()
 
 
-def _onAvatarEnterWorld(self, *args, **kwargs):
-    result = None
-    try:
-        result = _origEnterWorld(self, *args, **kwargs)
-    except TypeError:
-        result = _origEnterWorld(self)
+def _onAvatarReady(*args, **kwargs):
     try:
         if g_tracker is not None:
             g_tracker.start()
     except Exception as e:
         logger.error('[MainGun] start failed: %s', e)
-    return result
 
 
-def _onAvatarBecomeNonPlayer(self, *args, **kwargs):
+def _onAvatarBecomeNonPlayer(*args, **kwargs):
     try:
         if g_tracker is not None:
             g_tracker.stop()
     except Exception:
         pass
-    try:
-        return _origBecomeNonPlayer(self, *args, **kwargs)
-    except TypeError:
-        return _origBecomeNonPlayer(self)
 
 
 def initialize(panel):
     global g_tracker
-    global _origEnterWorld
-    global _origBecomeNonPlayer
+    global _playerEventsBound
     if g_tracker is None:
         g_tracker = DamageTracker(panel)
     _installHealthHooks()
-    if getattr(PlayerAvatar, '_under_pressure_maingun_patched', False):
+    if _playerEventsBound:
         return
-    _origEnterWorld = PlayerAvatar.onEnterWorld
-    _origBecomeNonPlayer = PlayerAvatar.onBecomeNonPlayer
-    PlayerAvatar.onEnterWorld = _onAvatarEnterWorld
-    PlayerAvatar.onBecomeNonPlayer = _onAvatarBecomeNonPlayer
-    PlayerAvatar._under_pressure_maingun_patched = True
-    logger.info('[MainGun] tracker initialized')
+    g_playerEvents.onAvatarReady += _onAvatarReady
+    g_playerEvents.onAvatarBecomeNonPlayer += _onAvatarBecomeNonPlayer
+    g_playerEvents.onAccountShowGUI += _onAvatarBecomeNonPlayer
+    g_playerEvents.onAccountBecomeNonPlayer += _onAvatarBecomeNonPlayer
+    g_playerEvents.onDisconnected += _onAvatarBecomeNonPlayer
+    _playerEventsBound = True
+    logger.info('[MainGun] tracker initialized (player events)')
 
 
 def finalize():
     global g_tracker
-    global _origEnterWorld
-    global _origBecomeNonPlayer
+    global _playerEventsBound
+    if _playerEventsBound:
+        try:
+            g_playerEvents.onAvatarReady -= _onAvatarReady
+            g_playerEvents.onAvatarBecomeNonPlayer -= _onAvatarBecomeNonPlayer
+            g_playerEvents.onAccountShowGUI -= _onAvatarBecomeNonPlayer
+            g_playerEvents.onAccountBecomeNonPlayer -= _onAvatarBecomeNonPlayer
+            g_playerEvents.onDisconnected -= _onAvatarBecomeNonPlayer
+        except Exception:
+            pass
+        _playerEventsBound = False
     try:
         if g_tracker is not None:
             g_tracker.destroy()
     except Exception:
         pass
     g_tracker = None
-    try:
-        if getattr(PlayerAvatar, '_under_pressure_maingun_patched', False):
-            PlayerAvatar.onEnterWorld = _origEnterWorld
-            PlayerAvatar.onBecomeNonPlayer = _origBecomeNonPlayer
-            PlayerAvatar._under_pressure_maingun_patched = False
-    except Exception:
-        pass
     _uninstallHealthHooks()
