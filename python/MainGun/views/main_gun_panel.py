@@ -124,6 +124,9 @@ if _GF_OK:
         def __init__(self, content, parent):
             super(_MainGunPanelWindow, self).__init__(WindowFlags.WINDOW, content=content, layer=getattr(WindowLayer, 'WINDOW', WindowLayer.OVERLAY), name=VIEW_NAME, parent=parent)
 
+        def _onReady(self):
+            self.show(focus=False)
+
 
 class MainGunPanel(object):
 
