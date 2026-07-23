@@ -217,7 +217,7 @@
         var scale = remScale(payload.scale);
         var obtained = !!state.mainGunObtained;
         var dead = !!state.playerDead;
-        var failed = dead && !obtained;
+        var failed = (!!state.failed || dead) && !obtained;
         var displayMode = Math.max(1, Math.min(2, toInt(payload.displayMode, 1)));
         var extended = !!payload.extendedInfo;
 

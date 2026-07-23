@@ -167,7 +167,8 @@ class MainGunPanel(object):
             'completed': False,
             'teamDamageLeader': False,
             'mainGunObtained': False,
-            'playerDead': False
+            'playerDead': False,
+            'failed': False
         }
 
     def onBattleStart(self):
