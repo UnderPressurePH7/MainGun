@@ -39,6 +39,9 @@ LAYOUT_KEY = 'mods/under_pressure/MainGunBattle/layoutID'
 VIEW_NAME = 'MainGunBattle'
 BOUNDARY_GAP = 0
 DRAG_THRESHOLD = 20
+DRAG_TICK_ACTIVE = 0.0
+DRAG_TICK_ARMED = 0.05
+DRAG_TICK_IDLE = 0.25
 _gamefaceReadyHookBound = False
 
 
@@ -88,6 +91,7 @@ if _GF_OK:
         def __init__(self, owner):
             self._owner = owner
             model = _MainGunPanelModel(owner.buildPayload())
+            self._ownModel = model
             settings = ViewSettings(layoutID=_GF_LAYOUT(), flags=ViewFlags.VIEW, model=model)
             super(_MainGunPanelViewImpl, self).__init__(settings)
             owner._onViewCreated(model)
@@ -116,8 +120,9 @@ if _GF_OK:
 
         def _finalize(self):
             owner = self._owner
+            model = self._ownModel
             super(_MainGunPanelViewImpl, self)._finalize()
-            owner._onViewFinalized()
+            owner._onViewFinalized(model)
 
     class _MainGunPanelWindow(WindowImpl):
 
@@ -152,11 +157,16 @@ class MainGunPanel(object):
         self._guiResetterBound = False
         self._resizeCallbackID = None
         self._viewSizeSyncCallbackID = None
+        self._windowCallbackID = None
         self._dragCallbackID = None
         self._dragging = False
         self._mouseWasDown = False
+        self._cursorArmed = False
         self._dragStartCursor = None
         self._dragStartPosition = None
+        self._lastPayload = None
+        self._dragTicks = 0
+        self._dragTicksWhileDragging = 0
 
     @staticmethod
     def _defaultState():
@@ -207,6 +217,8 @@ class MainGunPanel(object):
         self._unbindGuiResetter()
         _cancelCallbackSafe(self._viewSizeSyncCallbackID)
         self._viewSizeSyncCallbackID = None
+        _cancelCallbackSafe(self._windowCallbackID)
+        self._windowCallbackID = None
         self._savePositionIfChanged()
         self._dropWindow()
         self._state = self._defaultState()
@@ -237,16 +249,21 @@ class MainGunPanel(object):
 
     def _onViewCreated(self, model):
         self._model = model
+        self._lastPayload = None
 
     def publish(self):
         if self._model is None:
             return
         payload = self.buildPayload()
+        if payload == self._lastPayload:
+            return
         try:
             with self._model.transaction() as model:
                 model.setPayload(payload)
         except Exception:
             logger.exception('[MainGunPanel] payload publish failed')
+            return
+        self._lastPayload = payload
 
     def _onReady(self, *args):
         if self._destroyed or not self._isInitialized:
@@ -258,19 +275,26 @@ class MainGunPanel(object):
         self._startDragTicker()
         self._bindGuiResetter()
 
-    def _onViewFinalized(self):
+    def _onViewFinalized(self, model=None):
+        if model is not None and self._model is not None and model is not self._model:
+            logger.debug('[MainGunPanel] stale view finalize ignored')
+            return
         self._window = None
         self._model = None
+        self._lastPayload = None
         self._nativeReady = False
         self._token += 1
         self._stopDragTicker()
         self._unbindGuiResetter()
         _cancelCallbackSafe(self._viewSizeSyncCallbackID)
         self._viewSizeSyncCallbackID = None
+        _cancelCallbackSafe(self._windowCallbackID)
+        self._windowCallbackID = None
         if self._isInitialized and not self._destroyed:
-            BigWorld.callback(0.1, self._ensureWindow)
+            self._windowCallbackID = BigWorld.callback(0.1, self._ensureWindow)
 
     def _ensureWindow(self):
+        self._windowCallbackID = None
         if self._destroyed or self._window is not None:
             return
         if not _GF_OK or gamefaceResMap is None:
@@ -284,6 +308,7 @@ class MainGunPanel(object):
             gamefaceOnReady(lambda: self._loadWindow(token))
 
     def _loadWindow(self, token, retry=0):
+        self._windowCallbackID = None
         if token != self._token or self._destroyed or not self._isInitialized:
             return
         try:
@@ -292,7 +317,8 @@ class MainGunPanel(object):
             parent = None
         if parent is None or parent.proxy is None or parent.windowStatus != WindowStatus.LOADED:
             if retry < 100:
-                BigWorld.callback(0.1, lambda: self._loadWindow(token, retry + 1))
+                self._windowCallbackID = BigWorld.callback(
+                    0.1, lambda: self._loadWindow(token, retry + 1))
             else:
                 logger.error('[MainGunPanel] main Wulf window never became ready')
             return
@@ -313,6 +339,7 @@ class MainGunPanel(object):
                 pass
             self._window = None
         self._model = None
+        self._lastPayload = None
         self._nativeReady = False
 
     def _move(self):
@@ -344,13 +371,6 @@ class MainGunPanel(object):
         return (scaleW, scaleH)
 
     def _syncPositionFromOffset(self):
-        # Offset is stored relative to the nearest screen corner:
-        # value >= 0 means distance from the left/top edge,
-        # value < 0 means distance from the right/bottom edge.
-        # A panel dragged next to the bottom-right damage panel therefore
-        # follows it exactly like moe_bloody's panel does, while a panel
-        # dragged to the top HUD stays glued to the top on windowed <->
-        # fullscreen switches instead of moving by the height difference.
         screenWidth, screenHeight = _screenResolution()
         offsetX, offsetY = self._offset[0], self._offset[1]
         self._position[0] = int(offsetX if offsetX >= 0 else screenWidth + offsetX)
@@ -456,28 +476,40 @@ class MainGunPanel(object):
 
     def _startDragTicker(self):
         if self._dragCallbackID is None:
-            self._dragCallbackID = BigWorld.callback(0.0, self._updateDragState)
+            self._dragCallbackID = BigWorld.callback(self._dragTickDelay(), self._updateDragState)
 
     def _stopDragTicker(self):
         _cancelCallbackSafe(self._dragCallbackID)
         self._dragCallbackID = None
         self._dragging = False
         self._mouseWasDown = False
+        self._cursorArmed = False
         self._dragStartCursor = None
         self._dragStartPosition = None
+
+    def _dragTickDelay(self):
+        if self._dragging:
+            return DRAG_TICK_ACTIVE
+        return DRAG_TICK_ARMED if self._cursorArmed else DRAG_TICK_IDLE
 
     def _updateDragState(self):
         self._dragCallbackID = None
         if self._isInitialized and self._window is not None:
+            self._dragTicks += 1
+            if self._dragging:
+                self._dragTicksWhileDragging += 1
             self._handleMouseDrag()
-            self._dragCallbackID = BigWorld.callback(0.0, self._updateDragState)
+            self._dragCallbackID = BigWorld.callback(self._dragTickDelay(), self._updateDragState)
 
     def _handleMouseDrag(self):
         if GUI is None:
+            self._cursorArmed = False
             return
         cursor = GUI.mcursor()
         mouseDown = BigWorld.isKeyDown(Keys.KEY_LEFTMOUSE)
-        if not cursor.visible or not cursor.inWindow or not cursor.inFocus:
+        usable = bool(cursor.visible and cursor.inWindow and cursor.inFocus and self._isVisible)
+        self._cursorArmed = usable
+        if not usable:
             if self._dragging:
                 self._finishDrag()
             self._dragging = False
@@ -505,6 +537,11 @@ class MainGunPanel(object):
     def _finishDrag(self):
         self._dragging = False
         self._savePositionIfChanged()
+        logger.debug(
+            '[MainGunPanel] drag finished: ticks=%d, of them dragging=%d',
+            self._dragTicks,
+            self._dragTicksWhileDragging
+        )
 
     def _isCursorOver(self, cursorPos):
         if not self._isVisible:

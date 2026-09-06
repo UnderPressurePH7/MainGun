@@ -1,4 +1,5 @@
 import math
+import weakref
 
 import BigWorld
 import constants
@@ -10,6 +11,20 @@ from .utils import logger, cancelCallbackSafe
 
 MIN_GUN_DAMAGE = 1000
 DAMAGE_RATE = 0.2
+ATTACH_RETRY_DELAY = 0.5
+ATTACH_MAX_ATTEMPTS = 20
+
+
+def _scheduleWeak(owner, delay, methodName, session):
+    ref = weakref.ref(owner)
+
+    def _fire():
+        target = ref()
+        if target is None or target._session != session:
+            return
+        getattr(target, methodName)()
+
+    return BigWorld.callback(delay, _fire)
 
 
 class DamageTracker(object):
@@ -30,8 +45,13 @@ class DamageTracker(object):
         self._feedbackHooked = False
         self._startCallbackID = None
         self._recalcCallbackID = None
+        self._attachCallbackID = None
+        self._publishCallbackID = None
+        self._attachAttempts = 0
+        self._attachGaveUp = False
+        self._stateDirty = False
+        self._session = 0
         self._playerDead = False
-        self._warning = False
         self._arena = None
         self._healthHooked = False
         self._killHooked = False
@@ -43,6 +63,7 @@ class DamageTracker(object):
         self._tryStartBattle(0)
 
     def stop(self):
+        self._session += 1
         self._cancelCallbacks()
         self._detachFeedback()
         self._detachArenaEvents()
@@ -59,8 +80,10 @@ class DamageTracker(object):
         self._healthMap = {}
         self._damageByVehicle = {}
         self._playerDead = False
-        self._warning = False
         self._lastPublished = None
+        self._attachAttempts = 0
+        self._attachGaveUp = False
+        self._stateDirty = False
 
     def destroy(self):
         self.stop()
@@ -68,8 +91,12 @@ class DamageTracker(object):
     def _cancelCallbacks(self):
         cancelCallbackSafe(self._startCallbackID)
         cancelCallbackSafe(self._recalcCallbackID)
+        cancelCallbackSafe(self._attachCallbackID)
+        cancelCallbackSafe(self._publishCallbackID)
         self._startCallbackID = None
         self._recalcCallbackID = None
+        self._attachCallbackID = None
+        self._publishCallbackID = None
 
     def _tryStartBattle(self, attempt):
         self._startCallbackID = None
@@ -91,19 +118,27 @@ class DamageTracker(object):
         totalEnemiesHP = self._calcTotalEnemiesHP()
         if totalEnemiesHP <= 0:
             return False
+        self._session += 1
+        cancelCallbackSafe(self._publishCallbackID)
+        cancelCallbackSafe(self._attachCallbackID)
+        self._publishCallbackID = None
+        self._attachCallbackID = None
         self._totalEnemiesHP = totalEnemiesHP
         self._baseNeed = self._computeNeed(totalEnemiesHP)
         self._need = self._baseNeed
         self._current = 0
         self._damageByVehicle = {}
         self._playerDead = False
-        self._warning = False
         self._lastPublished = None
+        self._attachAttempts = 0
+        self._attachGaveUp = False
+        self._stateDirty = False
         self._initHealthMap()
         self._started = True
         self._panel.onBattleStart()
-        self._attachFeedback()
-        self._attachArenaEvents()
+        missing = self._ensureSubscriptions()
+        if missing:
+            self._scheduleAttachRetry()
         self._publishState()
         self._scheduleRecalc()
         logger.info(
@@ -112,6 +147,48 @@ class DamageTracker(object):
             self._need
         )
         return True
+
+    def _ensureSubscriptions(self):
+        if not self._feedbackHooked:
+            self._attachFeedback()
+        if not (self._healthHooked and self._killHooked):
+            self._attachArenaEvents()
+        missing = []
+        if not self._feedbackHooked:
+            missing.append('feedback')
+        if not self._healthHooked:
+            missing.append('arena.onVehicleHealthChanged')
+        if not self._killHooked:
+            missing.append('arena.onVehicleKilled')
+        return missing
+
+    def _scheduleAttachRetry(self):
+        if self._attachCallbackID is not None or self._attachGaveUp:
+            return
+        if not self._started:
+            return
+        self._attachCallbackID = _scheduleWeak(
+            self, ATTACH_RETRY_DELAY, '_onAttachRetry', self._session)
+
+    def _onAttachRetry(self):
+        self._attachCallbackID = None
+        if not self._started:
+            return
+        missing = self._ensureSubscriptions()
+        if not missing:
+            self._attachAttempts = 0
+            logger.debug('[MainGun] all event sources attached')
+            return
+        self._attachAttempts += 1
+        if self._attachAttempts >= ATTACH_MAX_ATTEMPTS:
+            self._attachGaveUp = True
+            logger.error(
+                '[MainGun] event sources still unavailable after %d attempts: %s',
+                self._attachAttempts,
+                ', '.join(missing)
+            )
+            return
+        self._scheduleAttachRetry()
 
     def _isAllowedBattle(self):
         try:
@@ -176,6 +253,29 @@ class DamageTracker(object):
         team = self._teamForVehicle(vehicleID)
         return team is not None and self._playerTeam is not None and team == self._playerTeam
 
+    def _readHealthField(self, data, keys):
+        for key in keys:
+            value = self._vehicleDataGet(data, key, None)
+            if value is None:
+                continue
+            try:
+                return max(0, int(value))
+            except Exception:
+                continue
+        return None
+
+    def _maxHealthOf(self, data):
+        hp = self._readHealthField(data, ('maxHealth', 'maxHp'))
+        if hp is None:
+            hp = self._readHealthField(data, ('health',))
+        return 0 if hp is None else hp
+
+    def _currentHealthOf(self, data):
+        hp = self._readHealthField(data, ('health',))
+        if hp is None:
+            hp = self._maxHealthOf(data)
+        return hp
+
     def _maxHealthForVehicle(self, vehicleID):
         try:
             arena = getattr(BigWorld.player(), 'arena', None)
@@ -183,12 +283,7 @@ class DamageTracker(object):
             data = vehicles.get(int(vehicleID)) if hasattr(vehicles, 'get') else None
             if data is None:
                 return 0
-            hp = self._vehicleDataGet(data, 'maxHealth', 0)
-            if not hp:
-                hp = self._vehicleDataGet(data, 'maxHp', 0)
-            if not hp:
-                hp = self._vehicleDataGet(data, 'health', 0)
-            return int(hp or 0)
+            return self._maxHealthOf(data)
         except Exception:
             return 0
 
@@ -199,12 +294,7 @@ class DamageTracker(object):
                 team = self._vehicleDataGet(data, 'team', None)
                 if team is None or self._playerTeam is None or team == self._playerTeam:
                     continue
-                hp = self._vehicleDataGet(data, 'maxHealth', 0)
-                if not hp:
-                    hp = self._vehicleDataGet(data, 'maxHp', 0)
-                if not hp:
-                    hp = self._vehicleDataGet(data, 'health', 0)
-                total += max(0, int(hp or 0))
+                total += self._maxHealthOf(data)
             except Exception:
                 continue
         return total
@@ -233,8 +323,7 @@ class DamageTracker(object):
             self._totalEnemiesHP = totalEnemiesHP
             self._baseNeed = self._computeNeed(totalEnemiesHP)
             self._updateGunScore()
-            self._checkWarning()
-            self._publishState()
+            self._invalidate()
         self._scheduleRecalc()
 
     def _initHealthMap(self):
@@ -242,12 +331,7 @@ class DamageTracker(object):
         self._enemiesHP = 0
         for vehicleID, data in self._vehicleItems():
             try:
-                hp = self._vehicleDataGet(data, 'health', 0)
-                if not hp:
-                    hp = self._vehicleDataGet(data, 'maxHealth', 0)
-                if not hp:
-                    hp = self._vehicleDataGet(data, 'maxHp', 0)
-                hp = max(0, int(hp or 0))
+                hp = self._currentHealthOf(data)
                 self._healthMap[int(vehicleID)] = hp
                 if self._isEnemyVehicle(vehicleID):
                     self._enemiesHP += hp
@@ -260,12 +344,7 @@ class DamageTracker(object):
                 vehicleID = int(vehicleID)
                 if vehicleID in self._healthMap:
                     continue
-                hp = self._vehicleDataGet(data, 'health', 0)
-                if not hp:
-                    hp = self._vehicleDataGet(data, 'maxHealth', 0)
-                if not hp:
-                    hp = self._vehicleDataGet(data, 'maxHp', 0)
-                hp = max(0, int(hp or 0))
+                hp = self._currentHealthOf(data)
                 self._healthMap[vehicleID] = hp
                 if self._isEnemyVehicle(vehicleID):
                     self._enemiesHP += hp
@@ -301,8 +380,7 @@ class DamageTracker(object):
         if damage <= 0 or not self._started:
             return
         self._current += damage
-        self._checkWarning()
-        self._publishState()
+        self._invalidate()
 
     def _recordAllyDamage(self, attackerID, damage):
         try:
@@ -337,15 +415,12 @@ class DamageTracker(object):
         self._enemiesHP = max(0, self._enemiesHP - (oldHP - newHP))
         return True
 
-    def _checkWarning(self):
-        if self._warning:
-            return
-        if self._playerDead:
-            self._warning = True
-            return
+    def _isHealthShortage(self):
         damageLeft = int(self._need) - int(self._current)
-        if damageLeft > 0 and self._enemiesHP < damageLeft:
-            self._warning = True
+        return damageLeft > 0 and int(self._enemiesHP) < damageLeft
+
+    def _isFailed(self):
+        return bool(self._playerDead) or self._isHealthShortage()
 
     def _onVehicleHealthChanged(self, targetID, attackerID, damage):
         if not self._started:
@@ -357,8 +432,7 @@ class DamageTracker(object):
             enemyDamaged = self._updateEnemyHealth(targetID, damage)
             if enemyDamaged:
                 self._recordAllyDamage(attackerID, damage)
-            self._checkWarning()
-            self._publishState()
+            self._invalidate()
         except Exception as e:
             logger.error('[MainGun] vehicle health event failed: %s', e)
 
@@ -388,29 +462,28 @@ class DamageTracker(object):
                     return value
         return 0
 
-    def _processFeedbackOne(self, event):
+    def _damageFromFeedbackOne(self, event):
         try:
             if not hasattr(event, 'getType'):
-                return False
+                return 0
             if event.getType() != FEEDBACK_EVENT_ID.PLAYER_DAMAGED_HP_ENEMY:
-                return False
-            damage = self._damageFromObj(event.getExtra())
-            if damage > 0:
-                self._recordPlayerDamage(damage)
-                return True
+                return 0
+            return max(0, self._damageFromObj(event.getExtra()))
         except Exception:
-            pass
-        return False
+            return 0
 
     def _onPlayerFeedbackReceived(self, events):
         if not self._started:
             return
         try:
             if isinstance(events, (list, tuple)):
-                for event in events:
-                    self._processFeedbackOne(event)
+                packet = events
             else:
-                self._processFeedbackOne(events)
+                packet = (events,)
+            damage = 0
+            for event in packet:
+                damage += self._damageFromFeedbackOne(event)
+            self._recordPlayerDamage(damage)
         except Exception as e:
             logger.error('[MainGun] feedback failed: %s', e)
 
@@ -452,20 +525,22 @@ class DamageTracker(object):
             arena = getattr(BigWorld.player(), 'arena', None)
             if arena is None:
                 return False
-            self._detachArenaEvents()
+            if self._arena is not None and self._arena is not arena:
+                self._detachArenaEvents()
             self._arena = arena
-            healthEvent = getattr(arena, 'onVehicleHealthChanged', None)
-            if healthEvent is not None:
-                healthEvent += self._onVehicleHealthChanged
-                self._healthHooked = True
-            killEvent = getattr(arena, 'onVehicleKilled', None)
-            if killEvent is not None:
-                killEvent += self._onVehicleKilled
-                self._killHooked = True
-            return self._healthHooked
+            if not self._healthHooked:
+                healthEvent = getattr(arena, 'onVehicleHealthChanged', None)
+                if healthEvent is not None:
+                    healthEvent += self._onVehicleHealthChanged
+                    self._healthHooked = True
+            if not self._killHooked:
+                killEvent = getattr(arena, 'onVehicleKilled', None)
+                if killEvent is not None:
+                    killEvent += self._onVehicleKilled
+                    self._killHooked = True
+            return self._healthHooked and self._killHooked
         except Exception as e:
             logger.error('[MainGun] arena events attach failed: %s', e)
-            self._detachArenaEvents()
             return False
 
     def _detachArenaEvents(self):
@@ -505,20 +580,36 @@ class DamageTracker(object):
                     self._healthMap[targetKey] = 0
                     self._enemiesHP = max(0, self._enemiesHP - oldHP)
                     changed = True
-            self._checkWarning()
-            if changed or self._warning:
-                self._publishState()
+            if changed:
+                self._invalidate()
         except Exception as e:
             logger.error('[MainGun] kill event failed: %s', e)
 
     def _isTeamDamageLeader(self):
         return self._current >= self._topAllyDamage()
 
+    def _invalidate(self):
+        if not self._started:
+            return
+        self._stateDirty = True
+        if self._publishCallbackID is None:
+            self._publishCallbackID = _scheduleWeak(
+                self, 0.0, '_flushState', self._session)
+
+    def _flushState(self):
+        self._publishCallbackID = None
+        if not self._started or not self._stateDirty:
+            return
+        self._stateDirty = False
+        self._publishState()
+
     def _publishState(self):
+        self._stateDirty = False
         remaining = max(0, int(self._need) - int(self._current))
         completed = self._need > 0 and self._current >= self._need
         leader = self._isTeamDamageLeader()
         obtained = bool(completed and leader)
+        failed = self._isFailed()
         snapshot = (
             int(self._current),
             int(self._need),
@@ -526,7 +617,7 @@ class DamageTracker(object):
             bool(leader),
             bool(obtained),
             bool(self._playerDead),
-            bool(self._warning)
+            bool(failed)
         )
         if snapshot == self._lastPublished:
             return
@@ -539,7 +630,7 @@ class DamageTracker(object):
             'teamDamageLeader': bool(leader),
             'mainGunObtained': bool(obtained),
             'playerDead': bool(self._playerDead),
-            'failed': bool(self._warning)
+            'failed': bool(failed)
         })
 
 
