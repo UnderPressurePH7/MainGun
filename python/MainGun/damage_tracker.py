@@ -6,6 +6,11 @@ import constants
 from PlayerEvents import g_playerEvents
 from gui.battle_control.battle_constants import FEEDBACK_EVENT_ID
 
+try:
+    from gui.battle_control.battle_constants import PERSONAL_EFFICIENCY_TYPE
+except ImportError:
+    PERSONAL_EFFICIENCY_TYPE = None
+
 from .utils import logger, cancelCallbackSafe
 
 
@@ -37,12 +42,16 @@ class DamageTracker(object):
         self._baseNeed = 0
         self._need = 0
         self._current = 0
+        self._feedbackDamage = 0
+        self._efficiencyDamage = 0
         self._playerVehicleID = None
         self._playerTeam = None
         self._healthMap = {}
         self._damageByVehicle = {}
         self._feedbackCtrl = None
         self._feedbackHooked = False
+        self._efficiencyCtrl = None
+        self._efficiencyHooked = False
         self._startCallbackID = None
         self._recalcCallbackID = None
         self._attachCallbackID = None
@@ -66,6 +75,7 @@ class DamageTracker(object):
         self._session += 1
         self._cancelCallbacks()
         self._detachFeedback()
+        self._detachEfficiency()
         self._detachArenaEvents()
         if self._started:
             self._panel.onBattleEnd()
@@ -75,6 +85,8 @@ class DamageTracker(object):
         self._baseNeed = 0
         self._need = 0
         self._current = 0
+        self._feedbackDamage = 0
+        self._efficiencyDamage = 0
         self._playerVehicleID = None
         self._playerTeam = None
         self._healthMap = {}
@@ -127,6 +139,8 @@ class DamageTracker(object):
         self._baseNeed = self._computeNeed(totalEnemiesHP)
         self._need = self._baseNeed
         self._current = 0
+        self._feedbackDamage = 0
+        self._efficiencyDamage = 0
         self._damageByVehicle = {}
         self._playerDead = False
         self._lastPublished = None
@@ -151,11 +165,15 @@ class DamageTracker(object):
     def _ensureSubscriptions(self):
         if not self._feedbackHooked:
             self._attachFeedback()
+        if not self._efficiencyHooked:
+            self._attachEfficiency()
         if not (self._healthHooked and self._killHooked):
             self._attachArenaEvents()
         missing = []
         if not self._feedbackHooked:
             missing.append('feedback')
+        if not self._efficiencyHooked and PERSONAL_EFFICIENCY_TYPE is not None:
+            missing.append('personalEfficiencyCtrl')
         if not self._healthHooked:
             missing.append('arena.onVehicleHealthChanged')
         if not self._killHooked:
@@ -379,8 +397,14 @@ class DamageTracker(object):
             damage = 0
         if damage <= 0 or not self._started:
             return
-        self._current += damage
-        self._invalidate()
+        self._feedbackDamage += damage
+        self._syncCurrentDamage()
+
+    def _syncCurrentDamage(self):
+        current = max(self._feedbackDamage, self._efficiencyDamage)
+        if current != self._current:
+            self._current = current
+            self._invalidate()
 
     def _recordAllyDamage(self, attackerID, damage):
         try:
@@ -519,6 +543,53 @@ class DamageTracker(object):
                 pass
         self._feedbackCtrl = None
         self._feedbackHooked = False
+
+    def _attachEfficiency(self):
+        if PERSONAL_EFFICIENCY_TYPE is None:
+            return False
+        try:
+            player = BigWorld.player()
+            provider = getattr(player, 'guiSessionProvider', None)
+            shared = getattr(provider, 'shared', None) if provider is not None else None
+            ctrl = getattr(shared, 'personalEfficiencyCtrl', None) if shared is not None else None
+            if ctrl is None:
+                return False
+            if self._efficiencyCtrl is ctrl and self._efficiencyHooked:
+                return True
+            self._detachEfficiency()
+            event = getattr(ctrl, 'onTotalEfficiencyUpdated', None)
+            if event is None or not hasattr(ctrl, 'getTotalEfficiency'):
+                return False
+            event += self._onTotalEfficiencyUpdated
+            self._efficiencyCtrl = ctrl
+            self._efficiencyHooked = True
+            self._onTotalEfficiencyUpdated()
+            return True
+        except Exception as e:
+            logger.error('[MainGun] efficiency attach failed: %s', e)
+            return False
+
+    def _detachEfficiency(self):
+        if self._efficiencyCtrl is not None and self._efficiencyHooked:
+            try:
+                event = getattr(self._efficiencyCtrl, 'onTotalEfficiencyUpdated', None)
+                if event is not None:
+                    event -= self._onTotalEfficiencyUpdated
+            except Exception:
+                pass
+        self._efficiencyCtrl = None
+        self._efficiencyHooked = False
+
+    def _onTotalEfficiencyUpdated(self, *args, **kwargs):
+        if not self._started or self._efficiencyCtrl is None:
+            return
+        try:
+            total = int(self._efficiencyCtrl.getTotalEfficiency(PERSONAL_EFFICIENCY_TYPE.DAMAGE) or 0)
+        except Exception as e:
+            logger.error('[MainGun] efficiency read failed: %s', e)
+            return
+        self._efficiencyDamage = max(0, total)
+        self._syncCurrentDamage()
 
     def _attachArenaEvents(self):
         try:
