@@ -1,3 +1,3 @@
-from .main_gun_panel import MainGunPanel, registerGamefaceComponents, unregisterGamefaceComponents
+from .main_gun_panel import MainGunPanel
 
-__all__ = ('MainGunPanel', 'registerGamefaceComponents', 'unregisterGamefaceComponents')
+__all__ = ('MainGunPanel',)

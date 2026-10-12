@@ -19,56 +19,32 @@ from ..settings import g_configFile, getTranslation
 from ..utils import logger, cancelCallbackSafe as _cancelCallbackSafe, screenResolution as _screenResolution, cursorPixels as _cursorPixels
 
 try:
-    import openwg_gameface
-    from openwg_gameface import ModDynAccessor, manager as gamefaceResMap, on_ready as gamefaceOnReady
     from frameworks.wulf import ViewFlags, ViewModel, ViewSettings, WindowFlags, WindowLayer, WindowStatus
+    from gui.impl.gen import R
     from gui.impl.gui_decorators import args2params
     from gui.impl.pub import ViewImpl, WindowImpl
     from helpers import dependency
     from skeletons.gui.impl import IGuiLoader
+    # Declared natively in res/gui/gen_resources/me.under_pressure.maingun.json (WoT 2.4.1+)
+    _GF_LAYOUT = R.mods.under_pressure.maingun.views.MainGunBattle
     _GF_OK = True
 except Exception:
-    openwg_gameface = None
-    ModDynAccessor = gamefaceResMap = gamefaceOnReady = None
+    logger.exception('[MainGunPanel] Gameface API unavailable; UI disabled')
     ViewFlags = ViewModel = ViewSettings = WindowFlags = WindowLayer = WindowStatus = None
     ViewImpl = WindowImpl = args2params = None
     dependency = IGuiLoader = None
+    _GF_LAYOUT = None
     _GF_OK = False
 
-LAYOUT_KEY = 'mods/under_pressure/MainGunBattle/layoutID'
 VIEW_NAME = 'MainGunBattle'
 BOUNDARY_GAP = 0
 DRAG_THRESHOLD = 20
 DRAG_TICK_ACTIVE = 0.0
 DRAG_TICK_ARMED = 0.05
 DRAG_TICK_IDLE = 0.25
-_gamefaceReadyHookBound = False
-
-
-def registerGamefaceComponents():
-    global _gamefaceReadyHookBound
-    if not _GF_OK:
-        logger.error('[MainGunPanel] openwg_gameface is not installed; UI disabled')
-        return
-    if _gamefaceReadyHookBound:
-        return
-    _gamefaceReadyHookBound = True
-
-    @gamefaceOnReady
-    def _onResMapReady():
-        try:
-            resolved = dict(openwg_gameface.res_ids_by_mask('mods/under_pressure/'))
-            logger.debug('[MainGunPanel] res_map ready, %d layouts resolved', len(resolved))
-        except Exception:
-            logger.exception('[MainGunPanel] res_map validation failed')
-
-
-def unregisterGamefaceComponents():
-    logger.debug('[MainGunPanel] Gameface res_map unregistration')
 
 
 if _GF_OK:
-    _GF_LAYOUT = ModDynAccessor(LAYOUT_KEY)
 
     class _MainGunPanelModel(ViewModel):
 
@@ -297,15 +273,13 @@ class MainGunPanel(object):
         self._windowCallbackID = None
         if self._destroyed or self._window is not None:
             return
-        if not _GF_OK or gamefaceResMap is None:
-            logger.error('[MainGunPanel] openwg_gameface is required for Gameface panel')
+        if not _GF_OK:
+            return
+        if _GF_LAYOUT() < 0:
+            logger.error('[MainGunPanel] layout MainGunBattle is not registered (gen_resources missing?)')
             return
         self._token += 1
-        token = self._token
-        if getattr(gamefaceResMap, 'isResMapValidated', False):
-            self._loadWindow(token)
-        else:
-            gamefaceOnReady(lambda: self._loadWindow(token))
+        self._loadWindow(self._token)
 
     def _loadWindow(self, token, retry=0):
         self._windowCallbackID = None

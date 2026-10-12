@@ -1,5 +1,6 @@
 build.json
 build_wotmod.bat
+build/
 *.md
 *.pyc
 __pycache__/

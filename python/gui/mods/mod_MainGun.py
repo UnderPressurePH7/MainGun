@@ -1,7 +1,7 @@
 from MainGun.utils import logger
 from MainGun import initialize, finalize
 
-__version__ = '0.0.7'
+__version__ = '0.0.8'
 __author__ = 'Under_Pressure'
 __mod_name__ = 'MainGun'
 

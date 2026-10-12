@@ -264,6 +264,53 @@ def build_python(config: AppConfig) -> None:
             logger.error('Python fail compile: %s\n%s', file_path, e.output)
 
 
+GEN_RESOURCES_DIR = pathlib.Path('resources/in/gui/gen_resources')
+GEN_RESOURCE_TYPES = {'Entry', 'Area', 'Layout', 'String', 'Image', 'Sound', 'Style', 'Animation', 'Video', 'DynamicId'}
+
+
+def validate_gen_resources() -> None:
+    """
+    Validates native resource declarations (WoT 2.4.1+, gui/gen_resources/*.json).
+
+    The client fails to load ALL resources (UI never comes up) on invalid JSON,
+    so a broken declaration must stop the build.
+
+    Raises:
+        ValueError: If any declaration file is invalid.
+    """
+    if not GEN_RESOURCES_DIR.is_dir():
+        return
+
+    errors: List[str] = []
+    seen_ids: Set[str] = set()
+    for file_path in sorted(GEN_RESOURCES_DIR.glob('*.json')):
+        try:
+            items = json.loads(file_path.read_text(encoding='utf-8'))
+        except (ValueError, UnicodeDecodeError) as e:
+            errors.append(f'{file_path}: invalid JSON: {e}')
+            continue
+        if not isinstance(items, list):
+            errors.append(f'{file_path}: root must be a JSON array')
+            continue
+        for index, item in enumerate(items):
+            where = f'{file_path}[{index}]'
+            if not isinstance(item, dict) or not all(isinstance(item.get(key), str) for key in ('type', 'id', 'path')):
+                errors.append(f'{where}: "type", "id" and "path" strings are required')
+                continue
+            if item['type'] not in GEN_RESOURCE_TYPES:
+                errors.append(f'{where}: unknown type "{item["type"]}"')
+            segments = item['id'].split('.')
+            if segments[0] != 'R' or not all(segments) or not 1 < len(segments) <= 17:
+                errors.append(f'{where}: invalid id "{item["id"]}"')
+            if item['id'] in seen_ids:
+                errors.append(f'{where}: duplicated id "{item["id"]}"')
+            seen_ids.add(item['id'])
+        logger.info('gen_resources validated: %s (%d items)', file_path, len(items))
+
+    if errors:
+        raise ValueError('Invalid gen_resources:\n' + '\n'.join(errors))
+
+
 def main() -> None:
     """The main entry point for the build script."""
     # --- Argument Parsing ---
@@ -293,6 +340,8 @@ def main() -> None:
 
     if not game_folder or not game_version:
         raise ValueError("Game folder or version is not configured.")
+
+    validate_gen_resources()
 
     # --- Folder Preparation ---
     temp_dir = pathlib.Path('temp')
