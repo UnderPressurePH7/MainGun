@@ -114,9 +114,6 @@ body {
     margin-right: 8rem;
 }
 
-.main-gun-remaining-icon-mode {
-    margin-left: 0;
-}
 
 #main-gun-label {
     color: #FFFFFF;
@@ -129,15 +126,18 @@ body {
 }
 
 #main-gun-label.main-gun-label-fail {
-    color: #ee6868 ;
+    color: #ee6868;
 }
-
 
 #main-gun-remaining {
     margin-left: 8rem;
     color: #FFFFFF;
     font-size: 18rem;
     font-weight: bold;
+}
+
+#main-gun-remaining.main-gun-remaining-icon-mode {
+    margin-left: 0;
 }
 
 #main-gun-remaining.main-gun-remaining-done {

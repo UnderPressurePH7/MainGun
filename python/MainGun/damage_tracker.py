@@ -122,8 +122,6 @@ class DamageTracker(object):
             self._startCallbackID = BigWorld.callback(0.5, lambda: self._tryStartBattle(attempt + 1))
 
     def _startBattleImpl(self):
-        if self._isAllowedBattle() is not True:
-            return False
         self._captureContext()
         if self._playerVehicleID is None or self._playerTeam is None:
             return False
@@ -324,11 +322,7 @@ class DamageTracker(object):
         )
 
     def _scheduleRecalc(self):
-        try:
-            if self._recalcCallbackID is not None:
-                BigWorld.cancelCallback(self._recalcCallbackID)
-        except Exception:
-            pass
+        cancelCallbackSafe(self._recalcCallbackID)
         self._recalcCallbackID = BigWorld.callback(1.0, self._recalcTick)
 
     def _recalcTick(self):

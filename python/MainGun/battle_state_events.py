@@ -27,7 +27,6 @@ class BattleStateEvents(object):
         self._interfaceScale = 1.0
         self._extendedInfo = False
         self._killCamCtrl = None
-        self.onBattleLoaded = Event.SafeEvent()
         self.onBattleClosed = Event.SafeEvent()
         self.onGUIVisibility = Event.SafeEvent()
         self.onScaleChanged = Event.SafeEvent()
@@ -63,7 +62,6 @@ class BattleStateEvents(object):
         except Exception:
             pass
         self._unsubscribeKillCam()
-        self.onBattleLoaded.clear()
         self.onBattleClosed.clear()
         self.onGUIVisibility.clear()
         self.onScaleChanged.clear()
@@ -108,7 +106,6 @@ class BattleStateEvents(object):
             self._hiddenByKillCam = False
             self._extendedInfo = False
             self._handleBattleLoad()
-            self.onBattleLoaded()
 
     def _onGUISpaceLeft(self, spaceID):
         from skeletons.gui.app_loader import GuiGlobalSpaceID

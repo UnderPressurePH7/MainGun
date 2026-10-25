@@ -2,7 +2,6 @@ import json
 
 import BigWorld
 import Keys
-from gui import InputHandler
 
 try:
     import GUI
@@ -129,7 +128,6 @@ class MainGunPanel(object):
         self._scaleFactor = 1.0
         self._size = (180, 26)
         self._panelSize = (180, 26)
-        self._viewSizeReported = False
         self._guiResetterBound = False
         self._resizeCallbackID = None
         self._viewSizeSyncCallbackID = None
@@ -398,7 +396,6 @@ class MainGunPanel(object):
                 panelHeight = max(1, int(float(parts[3]))) if len(parts) > 3 else height
             except Exception:
                 return
-            self._viewSizeReported = True
             sizeChanged = (width, height) != tuple(self._size) or (panelWidth, panelHeight) != tuple(self._panelSize)
             if sizeChanged:
                 self._size = (width, height)
