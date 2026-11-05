@@ -9,7 +9,18 @@ except Exception:
     GUI = None
 
 logger = logging.getLogger('MainGun')
-logger.setLevel(logging.DEBUG if os.path.isfile('.debug_mods') else logging.ERROR)
+_DEBUG_MODE = os.path.isfile('.debug_mods')
+logger.setLevel(logging.DEBUG if _DEBUG_MODE else logging.INFO)
+if _DEBUG_MODE:
+    class _DebugAsInfo(logging.Filter):
+        def filter(self, record):
+            if record.levelno == logging.DEBUG:
+                record.levelno = logging.INFO
+                record.levelname = 'INFO'
+                record.msg = '[DEBUG] ' + str(record.msg)
+            return True
+
+    logger.addFilter(_DebugAsInfo())
 
 BASE_SCREEN = (1920, 1080)
 

@@ -41,7 +41,6 @@ class TranslationManager(object):
 
     def _defaults(self):
         return {
-            'modname': 'Main Gun',
             'mainGun': 'Main Gun'
         }
 

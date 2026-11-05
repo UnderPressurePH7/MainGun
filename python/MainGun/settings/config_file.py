@@ -54,6 +54,7 @@ class ConfigFile(object):
             return False
 
     def save(self):
+        tempPath = _POS_FILE + '.tmp'
         try:
             if not os.path.isdir(_CACHE_DIR):
                 os.makedirs(_CACHE_DIR)
@@ -62,10 +63,18 @@ class ConfigFile(object):
                 'panelOffset': [int(self.panelOffset[0]), int(self.panelOffset[1])],
                 'displayMode': int(self.displayMode)
             }
-            with open(_POS_FILE, 'wb') as fh:
+            with open(tempPath, 'wb') as fh:
                 fh.write(json.dumps(data))
+            if os.path.exists(_POS_FILE):
+                os.remove(_POS_FILE)
+            os.rename(tempPath, _POS_FILE)
             return True
         except Exception as e:
+            try:
+                if os.path.exists(tempPath):
+                    os.remove(tempPath)
+            except Exception:
+                pass
             logger.error('[ConfigFile] save failed: %s', e)
             return False
 

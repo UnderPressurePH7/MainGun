@@ -1,26 +1,42 @@
-from MainGun.utils import logger
-from MainGun import initialize, finalize
-
-__version__ = '0.0.9'
+__version__ = '0.0.10'
 __author__ = 'Under_Pressure'
 __mod_name__ = 'MainGun'
 
 
 def init():
-    logger.debug('START LOADING: v%s', __version__)
     try:
+        from MainGun.utils import logger
+    except Exception:
+        logger = None
+    try:
+        from MainGun import initialize
+        if logger is not None:
+            logger.debug('START LOADING: v%s', __version__)
         initialize()
-        logger.info('LOADED SUCCESSFULLY: v%s', __version__)
+        if logger is not None:
+            logger.info('LOADED SUCCESSFULLY: v%s', __version__)
     except Exception as e:
-        logger.error('LOADING FAILED: %s', e)
         import traceback
-        logger.error('Traceback: %s', traceback.format_exc())
+        if logger is not None:
+            logger.error('LOADING FAILED: %s', e)
+            logger.error('Traceback: %s', traceback.format_exc())
+        else:
+            import logging
+            logging.getLogger('MainGun').exception('LOADING FAILED: %s', e)
 
 
 def fini():
-    logger.debug('SHUTTING DOWN: v%s', __version__)
     try:
+        try:
+            from MainGun.utils import logger
+        except Exception:
+            logger = None
+        from MainGun import finalize
+        if logger is not None:
+            logger.debug('SHUTTING DOWN: v%s', __version__)
         finalize()
-        logger.info('SHUTDOWN COMPLETE: v%s', __version__)
+        if logger is not None:
+            logger.info('SHUTDOWN COMPLETE: v%s', __version__)
     except Exception as e:
-        logger.error('SHUTDOWN FAILED: %s', e)
+        import logging
+        logging.getLogger('MainGun').exception('SHUTDOWN FAILED: %s', e)

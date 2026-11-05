@@ -53,7 +53,6 @@ class DamageTracker(object):
         self._efficiencyCtrl = None
         self._efficiencyHooked = False
         self._startCallbackID = None
-        self._recalcCallbackID = None
         self._attachCallbackID = None
         self._publishCallbackID = None
         self._attachAttempts = 0
@@ -64,21 +63,13 @@ class DamageTracker(object):
         self._arena = None
         self._healthHooked = False
         self._killHooked = False
+        self._vehicleListHooked = False
+        self._vehicleListEvents = []
+        self._topAllyDamageValue = 0
         self._lastPublished = None
+        self._resetState()
 
-    def start(self):
-        if self._started:
-            return
-        self._tryStartBattle(0)
-
-    def stop(self):
-        self._session += 1
-        self._cancelCallbacks()
-        self._detachFeedback()
-        self._detachEfficiency()
-        self._detachArenaEvents()
-        if self._started:
-            self._panel.onBattleEnd()
+    def _resetState(self):
         self._started = False
         self._totalEnemiesHP = 0
         self._enemiesHP = 0
@@ -91,26 +82,41 @@ class DamageTracker(object):
         self._playerTeam = None
         self._healthMap = {}
         self._damageByVehicle = {}
+        self._topAllyDamageValue = 0
         self._playerDead = False
         self._lastPublished = None
         self._attachAttempts = 0
         self._attachGaveUp = False
         self._stateDirty = False
 
+    def start(self):
+        if self._started or self._startCallbackID is not None:
+            return
+        self._tryStartBattle(0)
+
+    def stop(self):
+        self._session += 1
+        self._cancelCallbacks()
+        self._detachFeedback()
+        self._detachEfficiency()
+        self._detachArenaEvents()
+        if self._started:
+            self._panel.onBattleEnd()
+        self._resetState()
+
     def destroy(self):
         self.stop()
 
     def _cancelCallbacks(self):
         cancelCallbackSafe(self._startCallbackID)
-        cancelCallbackSafe(self._recalcCallbackID)
         cancelCallbackSafe(self._attachCallbackID)
         cancelCallbackSafe(self._publishCallbackID)
         self._startCallbackID = None
-        self._recalcCallbackID = None
         self._attachCallbackID = None
         self._publishCallbackID = None
 
     def _tryStartBattle(self, attempt):
+        cancelCallbackSafe(self._startCallbackID)
         self._startCallbackID = None
         allowed = self._isAllowedBattle()
         if allowed is False:
@@ -118,33 +124,27 @@ class DamageTracker(object):
             return
         if allowed is True and self._startBattleImpl():
             return
-        if attempt < 20:
+        if attempt < 19:
             self._startCallbackID = BigWorld.callback(0.5, lambda: self._tryStartBattle(attempt + 1))
+        else:
+            logger.warning('[MainGun] battle start failed after 20 attempts (arena/player context unavailable)')
 
     def _startBattleImpl(self):
+        self._session += 1
+        cancelCallbackSafe(self._publishCallbackID)
+        cancelCallbackSafe(self._attachCallbackID)
+        self._publishCallbackID = None
+        self._attachCallbackID = None
+        self._resetState()
         self._captureContext()
         if self._playerVehicleID is None or self._playerTeam is None:
             return False
         totalEnemiesHP = self._calcTotalEnemiesHP()
         if totalEnemiesHP <= 0:
             return False
-        self._session += 1
-        cancelCallbackSafe(self._publishCallbackID)
-        cancelCallbackSafe(self._attachCallbackID)
-        self._publishCallbackID = None
-        self._attachCallbackID = None
         self._totalEnemiesHP = totalEnemiesHP
         self._baseNeed = self._computeNeed(totalEnemiesHP)
         self._need = self._baseNeed
-        self._current = 0
-        self._feedbackDamage = 0
-        self._efficiencyDamage = 0
-        self._damageByVehicle = {}
-        self._playerDead = False
-        self._lastPublished = None
-        self._attachAttempts = 0
-        self._attachGaveUp = False
-        self._stateDirty = False
         self._initHealthMap()
         self._started = True
         self._panel.onBattleStart()
@@ -152,7 +152,6 @@ class DamageTracker(object):
         if missing:
             self._scheduleAttachRetry()
         self._publishState()
-        self._scheduleRecalc()
         logger.info(
             '[MainGun] battle started: enemyHP=%d need=%d',
             self._totalEnemiesHP,
@@ -165,7 +164,7 @@ class DamageTracker(object):
             self._attachFeedback()
         if not self._efficiencyHooked:
             self._attachEfficiency()
-        if not (self._healthHooked and self._killHooked):
+        if not (self._healthHooked and self._killHooked and self._vehicleListHooked):
             self._attachArenaEvents()
         missing = []
         if not self._feedbackHooked:
@@ -176,6 +175,8 @@ class DamageTracker(object):
             missing.append('arena.onVehicleHealthChanged')
         if not self._killHooked:
             missing.append('arena.onVehicleKilled')
+        if not self._vehicleListHooked:
+            missing.append('arena vehicle list events')
         return missing
 
     def _scheduleAttachRetry(self):
@@ -235,12 +236,18 @@ class DamageTracker(object):
             self._playerTeam = None
 
     def _vehicleItems(self):
+        vehicles = self._arenaVehicles()
         try:
-            arena = getattr(BigWorld.player(), 'arena', None)
-            vehicles = getattr(arena, 'vehicles', {}) if arena is not None else {}
             return vehicles.iteritems() if hasattr(vehicles, 'iteritems') else vehicles.items()
         except Exception:
             return []
+
+    def _arenaVehicles(self):
+        try:
+            arena = getattr(BigWorld.player(), 'arena', None)
+            return getattr(arena, 'vehicles', {}) if arena is not None else {}
+        except Exception:
+            return {}
 
     def _vehicleDataGet(self, data, key, default=None):
         try:
@@ -252,11 +259,9 @@ class DamageTracker(object):
 
     def _teamForVehicle(self, vehicleID):
         try:
-            arena = getattr(BigWorld.player(), 'arena', None)
-            vehicles = getattr(arena, 'vehicles', {}) if arena is not None else {}
+            vehicles = self._arenaVehicles()
+            vehicleID = int(vehicleID)
             data = vehicles.get(vehicleID) if hasattr(vehicles, 'get') else None
-            if data is None and hasattr(vehicles, 'get'):
-                data = vehicles.get(int(vehicleID))
             return self._vehicleDataGet(data, 'team', None)
         except Exception:
             return None
@@ -286,16 +291,31 @@ class DamageTracker(object):
             hp = self._readHealthField(data, ('health',))
         return 0 if hp is None else hp
 
-    def _currentHealthOf(self, data):
+    def _currentHealthOf(self, data, vehicleID=None):
         hp = self._readHealthField(data, ('health',))
+        if hp is None:
+            hp = self._liveEntityHealth(vehicleID)
         if hp is None:
             hp = self._maxHealthOf(data)
         return hp
 
+    def _liveEntityHealth(self, vehicleID):
+        try:
+            entity = BigWorld.entities.get(int(vehicleID)) if vehicleID is not None else None
+            alive = getattr(entity, 'isAlive', None) if entity is not None else None
+            if callable(alive):
+                alive = alive()
+            if entity is not None and alive is not False:
+                value = getattr(entity, 'health', None)
+                if value is not None:
+                    return max(0, int(value))
+        except Exception:
+            pass
+        return None
+
     def _maxHealthForVehicle(self, vehicleID):
         try:
-            arena = getattr(BigWorld.player(), 'arena', None)
-            vehicles = getattr(arena, 'vehicles', None) if arena is not None else None
+            vehicles = self._arenaVehicles()
             data = vehicles.get(int(vehicleID)) if hasattr(vehicles, 'get') else None
             if data is None:
                 return 0
@@ -321,45 +341,27 @@ class DamageTracker(object):
             int(math.ceil(float(totalEnemiesHP) * DAMAGE_RATE))
         )
 
-    def _scheduleRecalc(self):
-        cancelCallbackSafe(self._recalcCallbackID)
-        self._recalcCallbackID = BigWorld.callback(1.0, self._recalcTick)
-
-    def _recalcTick(self):
-        self._recalcCallbackID = None
-        if not self._started:
-            return
-        totalEnemiesHP = self._calcTotalEnemiesHP()
-        if totalEnemiesHP > self._totalEnemiesHP:
-            self._syncMissingHealthEntries()
-            self._totalEnemiesHP = totalEnemiesHP
-            self._baseNeed = self._computeNeed(totalEnemiesHP)
-            self._updateGunScore()
-            self._invalidate()
-        self._scheduleRecalc()
-
     def _initHealthMap(self):
-        self._healthMap = {}
-        self._enemiesHP = 0
-        for vehicleID, data in self._vehicleItems():
-            try:
-                hp = self._currentHealthOf(data)
-                self._healthMap[int(vehicleID)] = hp
-                if self._isEnemyVehicle(vehicleID):
-                    self._enemiesHP += hp
-            except Exception:
-                continue
+        self._syncHealthMap(True)
 
     def _syncMissingHealthEntries(self):
+        self._syncHealthMap(False)
+
+    def _syncHealthMap(self, reset):
+        if reset:
+            self._healthMap = {}
+            self._enemiesHP = 0
         for vehicleID, data in self._vehicleItems():
             try:
                 vehicleID = int(vehicleID)
-                if vehicleID in self._healthMap:
+                liveHP = self._liveEntityHealth(vehicleID)
+                oldHP = self._healthMap.get(vehicleID)
+                if oldHP is not None and liveHP is None:
                     continue
-                hp = self._currentHealthOf(data)
+                hp = liveHP if liveHP is not None else self._currentHealthOf(data, vehicleID)
                 self._healthMap[vehicleID] = hp
                 if self._isEnemyVehicle(vehicleID):
-                    self._enemiesHP += hp
+                    self._enemiesHP += hp if oldHP is None else hp - oldHP
             except Exception:
                 continue
 
@@ -370,16 +372,7 @@ class DamageTracker(object):
             return firstID == secondID
 
     def _topAllyDamage(self):
-        topDamage = 0
-        for vehicleID, damage in self._damageByVehicle.items():
-            try:
-                if self._sameVehicle(vehicleID, self._playerVehicleID):
-                    continue
-                if self._isAllyVehicle(vehicleID):
-                    topDamage = max(topDamage, int(damage))
-            except Exception:
-                pass
-        return topDamage
+        return self._topAllyDamageValue
 
     def _updateGunScore(self):
         self._need = max(self._baseNeed, self._topAllyDamage())
@@ -413,17 +406,18 @@ class DamageTracker(object):
             return
         totalDamage = int(self._damageByVehicle.get(attackerID, 0)) + damage
         self._damageByVehicle[attackerID] = totalDamage
+        self._topAllyDamageValue = max(self._topAllyDamageValue, totalDamage)
         if totalDamage > self._need:
             self._need = totalDamage
 
     def _updateEnemyHealth(self, targetID, damage):
         if not self._isEnemyVehicle(targetID):
-            return False
+            return 0
         try:
             targetID = int(targetID)
             damage = max(0, int(damage or 0))
         except Exception:
-            return False
+            return 0
         oldHP = self._healthMap.get(targetID, None)
         if oldHP is None:
             oldHP = self._maxHealthForVehicle(targetID)
@@ -431,7 +425,7 @@ class DamageTracker(object):
         newHP = max(0, oldHP - damage)
         self._healthMap[targetID] = newHP
         self._enemiesHP = max(0, self._enemiesHP - (oldHP - newHP))
-        return True
+        return oldHP - newHP
 
     def _isHealthShortage(self):
         damageLeft = int(self._need) - int(self._current)
@@ -447,10 +441,11 @@ class DamageTracker(object):
             damage = int(damage or 0)
             if damage <= 0:
                 return
-            enemyDamaged = self._updateEnemyHealth(targetID, damage)
-            if enemyDamaged:
-                self._recordAllyDamage(attackerID, damage)
-            self._invalidate()
+            appliedDamage = self._updateEnemyHealth(targetID, damage)
+            if appliedDamage > 0:
+                # Health events only cover vehicles currently in view; ally damage outside view is not observable here.
+                self._recordAllyDamage(attackerID, appliedDamage)
+                self._invalidate()
         except Exception as e:
             logger.error('[MainGun] vehicle health event failed: %s', e)
 
@@ -507,56 +502,25 @@ class DamageTracker(object):
 
     def _attachFeedback(self):
         try:
-            player = BigWorld.player()
-            provider = getattr(player, 'guiSessionProvider', None)
-            shared = getattr(provider, 'shared', None) if provider is not None else None
-            feedback = getattr(shared, 'feedback', None) if shared is not None else None
-            if feedback is None:
-                return False
-            if self._feedbackCtrl is feedback and self._feedbackHooked:
-                return True
-            self._detachFeedback()
-            event = getattr(feedback, 'onPlayerFeedbackReceived', None)
-            if event is None:
-                return False
-            event += self._onPlayerFeedbackReceived
-            self._feedbackCtrl = feedback
-            self._feedbackHooked = True
-            return True
+            return self._attachTrackerEvent(
+                '_feedbackCtrl', '_feedbackHooked', 'feedback',
+                'onPlayerFeedbackReceived', self._onPlayerFeedbackReceived)
         except Exception as e:
             logger.error('[MainGun] feedback attach failed: %s', e)
             return False
 
     def _detachFeedback(self):
-        if self._feedbackCtrl is not None and self._feedbackHooked:
-            try:
-                event = getattr(self._feedbackCtrl, 'onPlayerFeedbackReceived', None)
-                if event is not None:
-                    event -= self._onPlayerFeedbackReceived
-            except Exception:
-                pass
-        self._feedbackCtrl = None
-        self._feedbackHooked = False
+        self._detachTrackerEvent('_feedbackCtrl', '_feedbackHooked', 'onPlayerFeedbackReceived', self._onPlayerFeedbackReceived)
 
     def _attachEfficiency(self):
         if PERSONAL_EFFICIENCY_TYPE is None:
             return False
         try:
-            player = BigWorld.player()
-            provider = getattr(player, 'guiSessionProvider', None)
-            shared = getattr(provider, 'shared', None) if provider is not None else None
-            ctrl = getattr(shared, 'personalEfficiencyCtrl', None) if shared is not None else None
-            if ctrl is None:
+            if not self._attachTrackerEvent(
+                    '_efficiencyCtrl', '_efficiencyHooked', 'personalEfficiencyCtrl',
+                    'onTotalEfficiencyUpdated', self._onTotalEfficiencyUpdated,
+                    'getTotalEfficiency'):
                 return False
-            if self._efficiencyCtrl is ctrl and self._efficiencyHooked:
-                return True
-            self._detachEfficiency()
-            event = getattr(ctrl, 'onTotalEfficiencyUpdated', None)
-            if event is None or not hasattr(ctrl, 'getTotalEfficiency'):
-                return False
-            event += self._onTotalEfficiencyUpdated
-            self._efficiencyCtrl = ctrl
-            self._efficiencyHooked = True
             self._onTotalEfficiencyUpdated()
             return True
         except Exception as e:
@@ -564,15 +528,40 @@ class DamageTracker(object):
             return False
 
     def _detachEfficiency(self):
-        if self._efficiencyCtrl is not None and self._efficiencyHooked:
+        self._detachTrackerEvent('_efficiencyCtrl', '_efficiencyHooked', 'onTotalEfficiencyUpdated', self._onTotalEfficiencyUpdated)
+
+    def _sharedGuiSessionProvider(self):
+        player = BigWorld.player()
+        provider = getattr(player, 'guiSessionProvider', None)
+        return getattr(provider, 'shared', None) if provider is not None else None
+
+    def _attachTrackerEvent(self, ctrlAttr, hookedAttr, sharedName, eventName, handler, requiredMethod=None):
+        shared = self._sharedGuiSessionProvider()
+        ctrl = getattr(shared, sharedName, None) if shared is not None else None
+        if ctrl is None or (requiredMethod and not hasattr(ctrl, requiredMethod)):
+            return False
+        if getattr(self, ctrlAttr) is ctrl and getattr(self, hookedAttr):
+            return True
+        self._detachTrackerEvent(ctrlAttr, hookedAttr, eventName, handler)
+        event = getattr(ctrl, eventName, None)
+        if event is None:
+            return False
+        event += handler
+        setattr(self, ctrlAttr, ctrl)
+        setattr(self, hookedAttr, True)
+        return True
+
+    def _detachTrackerEvent(self, ctrlAttr, hookedAttr, eventName, handler):
+        ctrl = getattr(self, ctrlAttr)
+        if ctrl is not None and getattr(self, hookedAttr):
             try:
-                event = getattr(self._efficiencyCtrl, 'onTotalEfficiencyUpdated', None)
+                event = getattr(ctrl, eventName, None)
                 if event is not None:
-                    event -= self._onTotalEfficiencyUpdated
+                    event -= handler
             except Exception:
                 pass
-        self._efficiencyCtrl = None
-        self._efficiencyHooked = False
+        setattr(self, ctrlAttr, None)
+        setattr(self, hookedAttr, False)
 
     def _onTotalEfficiencyUpdated(self, *args, **kwargs):
         if not self._started or self._efficiencyCtrl is None:
@@ -603,7 +592,9 @@ class DamageTracker(object):
                 if killEvent is not None:
                     killEvent += self._onVehicleKilled
                     self._killHooked = True
-            return self._healthHooked and self._killHooked
+            if not self._vehicleListHooked:
+                self._subscribeVehicleListEvents(arena)
+            return self._healthHooked and self._killHooked and self._vehicleListHooked
         except Exception as e:
             logger.error('[MainGun] arena events attach failed: %s', e)
             return False
@@ -624,9 +615,48 @@ class DamageTracker(object):
                         event -= self._onVehicleKilled
                 except Exception:
                     pass
+            for eventName, handler in self._vehicleListEvents:
+                try:
+                    event = getattr(self._arena, eventName, None)
+                    if event is not None:
+                        event -= handler
+                except Exception:
+                    pass
         self._arena = None
         self._healthHooked = False
         self._killHooked = False
+        self._vehicleListHooked = False
+        self._vehicleListEvents = []
+
+    def _subscribeVehicleListEvents(self, arena):
+        events = (('onNewVehicleListReceived', self._onVehicleListChanged),
+                  ('onVehicleAdded', self._onVehicleAdded),
+                  ('onVehicleUpdated', self._onVehicleAdded))
+        for eventName, handler in events:
+            if (eventName, handler) in self._vehicleListEvents:
+                continue
+            event = getattr(arena, eventName, None)
+            if event is not None:
+                try:
+                    event += handler
+                    self._vehicleListEvents.append((eventName, handler))
+                except Exception as e:
+                    logger.error('[MainGun] arena %s attach failed: %s', eventName, e)
+        self._vehicleListHooked = len(self._vehicleListEvents) == len(events)
+
+    def _onVehicleListChanged(self, *args):
+        if not self._started:
+            return
+        self._syncMissingHealthEntries()
+        totalEnemiesHP = self._calcTotalEnemiesHP()
+        if totalEnemiesHP > self._totalEnemiesHP:
+            self._totalEnemiesHP = totalEnemiesHP
+            self._baseNeed = self._computeNeed(totalEnemiesHP)
+            self._updateGunScore()
+            self._invalidate()
+
+    def _onVehicleAdded(self, vehicleID=None, *args):
+        self._onVehicleListChanged()
 
     def _onVehicleKilled(self, targetID, *args, **kwargs):
         try:
@@ -671,13 +701,16 @@ class DamageTracker(object):
     def _publishState(self):
         self._stateDirty = False
         remaining = max(0, int(self._need) - int(self._current))
-        completed = self._need > 0 and self._current >= self._need
+        current = int(self._current)
+        need = int(self._need)
+        completed = need > 0 and current >= need
+        # TODO: confirm whether equal damage with an ally counts as completion.
         leader = self._isTeamDamageLeader()
         obtained = bool(completed and leader)
         failed = self._isFailed()
         snapshot = (
-            int(self._current),
-            int(self._need),
+            current,
+            need,
             bool(completed),
             bool(leader),
             bool(obtained),
@@ -688,11 +721,7 @@ class DamageTracker(object):
             return
         self._lastPublished = snapshot
         self._panel.updateState({
-            'current': int(self._current),
-            'need': int(self._need),
             'remaining': int(remaining),
-            'completed': bool(completed),
-            'teamDamageLeader': bool(leader),
             'mainGunObtained': bool(obtained),
             'playerDead': bool(self._playerDead),
             'failed': bool(failed)

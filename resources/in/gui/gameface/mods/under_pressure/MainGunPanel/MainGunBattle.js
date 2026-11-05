@@ -25,6 +25,16 @@
     var initialized = false;
     var everRendered = false;
     var appliedRem = null;
+    var pollTimer = null;
+    var dataChangeWired = false;
+    var FALLBACK_LAYOUT = {
+        panelPaddingX: 16,
+        panelBorderX: 2,
+        selectorWidth: 53,
+        selectorHeight: 25,
+        selectorGap: 5,
+        minPanelHeight: { 1: 26, 2: 42 }
+    };
 
     function debug(message) {
         try {
@@ -58,6 +68,14 @@
     function toInt(value, fallback) {
         var parsed = parseInt(value, 10);
         return isNaN(parsed) ? fallback : parsed;
+    }
+
+    function clampDisplayMode() {
+        return Math.max(1, Math.min(2, toInt(payload.displayMode, 1)));
+    }
+
+    function readModelRaw() {
+        return window.model && window.model.payload ? String(window.model.payload) : '';
     }
 
     function formatNumber(value) {
@@ -179,19 +197,28 @@
     function measureAndReport() {
         applyRemScale();
         var rem = appliedRem;
-        var paddingX = 8 * rem * 2;
-        var borderX = 1 * rem * 2;
-        var displayMode = Math.max(1, Math.min(2, toInt(payload.displayMode, 1)));
-        var selectorWidth = 53 * rem;
-        var selectorHeight = 25 * rem;
-        var selectorGap = 5 * rem;
+        var displayMode = clampDisplayMode();
+        var panelStyle = window.getComputedStyle(panelEl);
+        var selectorStyle = window.getComputedStyle(selectorEl);
+        var paddingX = toNumber(panelStyle.paddingLeft, NaN) + toNumber(panelStyle.paddingRight, NaN);
+        var borderX = toNumber(panelStyle.borderLeftWidth, NaN) + toNumber(panelStyle.borderRightWidth, NaN);
+        var selectorWidth = toNumber(selectorStyle.width, 0);
+        var selectorHeight = toNumber(selectorStyle.height, 0);
+        var selectorGap = toNumber(selectorStyle.marginTop, 0);
+        var minPanelHeight = toNumber(panelStyle.minHeight, 0);
+        if (!(paddingX >= 0)) paddingX = FALLBACK_LAYOUT.panelPaddingX * rem;
+        if (!(borderX >= 0)) borderX = FALLBACK_LAYOUT.panelBorderX * rem;
+        if (!(selectorWidth > 0)) selectorWidth = FALLBACK_LAYOUT.selectorWidth * rem;
+        if (!(selectorHeight > 0)) selectorHeight = FALLBACK_LAYOUT.selectorHeight * rem;
+        if (!(selectorGap > 0)) selectorGap = FALLBACK_LAYOUT.selectorGap * rem;
+        // CSS min-height is shared by both modes; mode 2 needs a taller minimum.
+        minPanelHeight = Math.max(minPanelHeight, FALLBACK_LAYOUT.minPanelHeight[displayMode] * rem);
 
         var contentWidth = contentEl.getBoundingClientRect().width;
         var measuredPanelHeight = panelEl.getBoundingClientRect().height;
 
         var panelWidth = Math.ceil(contentWidth + paddingX + borderX);
-        var panelHeight = Math.ceil(Math.max(measuredPanelHeight,
-            displayMode === 2 ? 42 * rem : 26 * rem));
+        var panelHeight = Math.ceil(Math.max(measuredPanelHeight, minPanelHeight));
         var width = Math.ceil(Math.max(panelWidth, selectorWidth));
         var height = Math.ceil(panelHeight + selectorGap + selectorHeight);
 
@@ -223,13 +250,14 @@
     }
 
     function readPayload() {
-        var raw = window.model && window.model.payload ? String(window.model.payload) : '';
+        var raw = readModelRaw();
         if (raw === lastPayload) {
             return false;
         }
         lastPayload = raw;
         try {
             payload = JSON.parse(raw || '{}');
+            if (payload.l10n) cachedL10n = payload.l10n;
         } catch (e) {
             payload = {};
             debug('payload parse failed: ' + e);
@@ -247,11 +275,11 @@
 
     function applyPayload() {
         var state = payload.state || {};
-        var l10n = payload.l10n || {};
+        var l10n = payload.l10n || cachedL10n;
         var obtained = !!state.mainGunObtained;
         var dead = !!state.playerDead;
         var failed = (!!state.failed || dead) && !obtained;
-        var displayMode = Math.max(1, Math.min(2, toInt(payload.displayMode, 1)));
+        var displayMode = clampDisplayMode();
         var extended = !!payload.extendedInfo;
         var geometry = false;
 
@@ -304,9 +332,18 @@
     }
 
     function poll() {
-        var raw = window.model && window.model.payload ? String(window.model.payload) : '';
+        var raw = readModelRaw();
         if (raw !== lastPayload) {
             render(false);
+        }
+    }
+
+    var cachedL10n = {};
+
+    function cleanup() {
+        if (pollTimer !== null) {
+            window.clearInterval(pollTimer);
+            pollTimer = null;
         }
     }
 
@@ -327,6 +364,7 @@
         render(true);
         if (window.engine) {
             window.engine.on('viewEnv.onDataChanged', onDataChanged);
+            dataChangeWired = true;
             window.engine.on('self.onScaleUpdated', onEnvironmentChanged);
             window.engine.on('clientResized', onEnvironmentChanged);
         }
@@ -345,7 +383,8 @@
         } catch (e) {}
         window.setTimeout(scheduleMeasure, 300);
         window.setTimeout(scheduleMeasure, 1000);
-        window.setInterval(poll, 200);
+        if (!dataChangeWired) pollTimer = window.setInterval(poll, 200);
+        window.addEventListener('unload', cleanup);
         if (window.model && typeof window.model.onReady === 'function') {
             window.model.onReady({});
         }

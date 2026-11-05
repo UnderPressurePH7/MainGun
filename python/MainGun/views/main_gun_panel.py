@@ -115,8 +115,7 @@ class MainGunPanel(object):
         self._model = None
         self._nativeReady = False
         self._token = 0
-        self._destroyed = True
-        self._isInitialized = False
+        self._active = False
         self._isVisible = False
         self._extendedInfo = False
         self._displayMode = g_configFile.displayMode
@@ -139,26 +138,21 @@ class MainGunPanel(object):
         self._dragStartCursor = None
         self._dragStartPosition = None
         self._lastPayload = None
-        self._dragTicks = 0
-        self._dragTicksWhileDragging = 0
+        self._includeL10n = True
 
     @staticmethod
     def _defaultState():
         return {
-            'current': 0,
-            'need': 0,
             'remaining': 0,
-            'completed': False,
-            'teamDamageLeader': False,
             'mainGunObtained': False,
             'playerDead': False,
             'failed': False
         }
 
     def onBattleStart(self):
-        if self._isInitialized:
+        if self._active:
             return
-        self._destroyed = False
+        self._active = True
         self._nativeReady = False
         self._calculateScaleFactor()
         self._syncPositionFromOffset()
@@ -168,7 +162,6 @@ class MainGunPanel(object):
         g_battleStateEvents.onScaleChanged += self._onInterfaceScaleChanged
         g_battleStateEvents.onExtendedInfo += self._onExtendedInfoChanged
         g_battleStateEvents.onBattleClosed += self._onBattleClosed
-        self._isInitialized = True
         self._ensureWindow()
         logger.debug('[MainGunPanel] Battle started')
 
@@ -176,10 +169,9 @@ class MainGunPanel(object):
         self.onBattleEnd()
 
     def onBattleEnd(self):
-        if not self._isInitialized:
+        if not self._active:
             return
-        self._isInitialized = False
-        self._destroyed = True
+        self._active = False
         try:
             g_battleStateEvents.onGUIVisibility -= self._onGUIVisibilityChanged
             g_battleStateEvents.onScaleChanged -= self._onInterfaceScaleChanged
@@ -189,10 +181,7 @@ class MainGunPanel(object):
             pass
         self._stopDragTicker()
         self._unbindGuiResetter()
-        _cancelCallbackSafe(self._viewSizeSyncCallbackID)
-        self._viewSizeSyncCallbackID = None
-        _cancelCallbackSafe(self._windowCallbackID)
-        self._windowCallbackID = None
+        self._cancelViewCallbacks()
         self._savePositionIfChanged()
         self._dropWindow()
         self._state = self._defaultState()
@@ -203,23 +192,24 @@ class MainGunPanel(object):
     def updateState(self, state):
         if state:
             self._state.update(state)
-            if self._isInitialized:
+            if self._active:
                 self.publish()
 
     def destroy(self):
         self.onBattleEnd()
-        self._destroyed = True
 
     def buildPayload(self):
-        return json.dumps({
+        payload = {
             'visible': bool(self._isVisible),
             'extendedInfo': bool(self._extendedInfo),
             'displayMode': int(self._displayMode),
             'scale': self._scaleFactor,
-            'size': {'w': self._size[0], 'h': self._size[1]},
             'state': self._state,
-            'l10n': {'mainGun': getTranslation('mainGun')}
-        }, ensure_ascii=False)
+        }
+        if self._includeL10n:
+            payload['l10n'] = {'mainGun': getTranslation('mainGun')}
+            self._includeL10n = False
+        return json.dumps(payload, ensure_ascii=False)
 
     def _onViewCreated(self, model):
         self._model = model
@@ -240,7 +230,7 @@ class MainGunPanel(object):
         self._lastPayload = payload
 
     def _onReady(self, *args):
-        if self._destroyed or not self._isInitialized:
+        if not self._active:
             return
         self._nativeReady = True
         self.publish()
@@ -260,16 +250,13 @@ class MainGunPanel(object):
         self._token += 1
         self._stopDragTicker()
         self._unbindGuiResetter()
-        _cancelCallbackSafe(self._viewSizeSyncCallbackID)
-        self._viewSizeSyncCallbackID = None
-        _cancelCallbackSafe(self._windowCallbackID)
-        self._windowCallbackID = None
-        if self._isInitialized and not self._destroyed:
+        self._cancelViewCallbacks()
+        if self._active:
             self._windowCallbackID = BigWorld.callback(0.1, self._ensureWindow)
 
     def _ensureWindow(self):
         self._windowCallbackID = None
-        if self._destroyed or self._window is not None:
+        if not self._active or self._window is not None:
             return
         if not _GF_OK:
             return
@@ -277,11 +264,12 @@ class MainGunPanel(object):
             logger.error('[MainGunPanel] layout MainGunBattle is not registered (gen_resources missing?)')
             return
         self._token += 1
+        self._includeL10n = True
         self._loadWindow(self._token)
 
     def _loadWindow(self, token, retry=0):
         self._windowCallbackID = None
-        if token != self._token or self._destroyed or not self._isInitialized:
+        if token != self._token or not self._active:
             return
         try:
             parent = dependency.instance(IGuiLoader).windowsManager.getMainWindow()
@@ -405,10 +393,18 @@ class MainGunPanel(object):
 
     def _syncAfterViewSize(self):
         self._viewSizeSyncCallbackID = None
-        if self._destroyed or self._window is None:
+        self._syncPositionAndMove()
+
+    def _syncPositionAndMove(self):
+        if not self._active or self._window is None:
             return
         self._syncPositionFromOffset()
         self._move()
+
+    def _cancelViewCallbacks(self):
+        for name in ('_viewSizeSyncCallbackID', '_windowCallbackID', '_resizeCallbackID'):
+            _cancelCallbackSafe(getattr(self, name))
+            setattr(self, name, None)
 
     def _bindGuiResetter(self):
         if self._guiResetterBound or g_guiResetters is None:
@@ -427,23 +423,17 @@ class MainGunPanel(object):
         except Exception:
             pass
         self._guiResetterBound = False
-        _cancelCallbackSafe(self._resizeCallbackID)
-        self._resizeCallbackID = None
 
     def _onScreenResize(self, *args):
-        if self._destroyed or self._window is None:
+        if not self._active or self._window is None:
             return
-        self._syncPositionFromOffset()
-        self._move()
+        self._syncPositionAndMove()
         _cancelCallbackSafe(self._resizeCallbackID)
         self._resizeCallbackID = BigWorld.callback(0.2, self._resizeResync)
 
     def _resizeResync(self):
         self._resizeCallbackID = None
-        if self._destroyed or self._window is None:
-            return
-        self._syncPositionFromOffset()
-        self._move()
+        self._syncPositionAndMove()
 
     def _startDragTicker(self):
         if self._dragCallbackID is None:
@@ -465,10 +455,7 @@ class MainGunPanel(object):
 
     def _updateDragState(self):
         self._dragCallbackID = None
-        if self._isInitialized and self._window is not None:
-            self._dragTicks += 1
-            if self._dragging:
-                self._dragTicksWhileDragging += 1
+        if self._active and self._window is not None:
             self._handleMouseDrag()
             self._dragCallbackID = BigWorld.callback(self._dragTickDelay(), self._updateDragState)
 
@@ -508,11 +495,6 @@ class MainGunPanel(object):
     def _finishDrag(self):
         self._dragging = False
         self._savePositionIfChanged()
-        logger.debug(
-            '[MainGunPanel] drag finished: ticks=%d, of them dragging=%d',
-            self._dragTicks,
-            self._dragTicksWhileDragging
-        )
 
     def _isCursorOver(self, cursorPos):
         if not self._isVisible:
@@ -522,19 +504,19 @@ class MainGunPanel(object):
         return left <= cursorPos[0] <= left + width and top <= cursorPos[1] <= top + height
 
     def _onGUIVisibilityChanged(self, isVisible):
-        if self._isInitialized:
+        if self._active:
             self._isVisible = bool(isVisible)
             self.publish()
 
     def _onInterfaceScaleChanged(self, scale):
-        if self._isInitialized:
+        if self._active:
             self._calculateScaleFactor()
             self.publish()
             self._syncPositionFromOffset()
             self._move()
 
     def _onExtendedInfoChanged(self, isDown):
-        if self._isInitialized:
+        if self._active:
             self._extendedInfo = bool(isDown)
             self.publish()
 

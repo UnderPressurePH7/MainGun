@@ -262,6 +262,7 @@ def build_python(config: AppConfig) -> None:
             logger.info('Python compiled: %s', file_path)
         except subprocess.CalledProcessError as e:
             logger.error('Python fail compile: %s\n%s', file_path, e.output)
+            raise
 
 
 GEN_RESOURCES_DIR = pathlib.Path('resources/in/gui/gen_resources')

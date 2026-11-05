@@ -44,23 +44,11 @@ class BattleStateEvents(object):
             ServicesLocator.settingsCore.interfaceScale.onScaleChanged -= self._onScaleFactorChanged
         except Exception:
             pass
-        try:
-            g_eventBus.removeListener(GameEvent.GUI_VISIBILITY, self._onGUIVisibility, scope=EVENT_BUS_SCOPE.BATTLE)
-        except Exception:
-            pass
-        for eventName in ('FULL_STATS', 'FULL_STATS_QUEST_PROGRESS', 'FULL_STATS_PERSONAL_RESERVES', 'EVENT_STATS'):
+        for eventType, handler in self._eventBusListeners():
             try:
-                eventType = getattr(GameEvent, eventName, None)
-                if eventType is not None:
-                    g_eventBus.removeListener(eventType, self._onToggleFullStats, scope=EVENT_BUS_SCOPE.BATTLE)
+                g_eventBus.removeListener(eventType, handler, scope=EVENT_BUS_SCOPE.BATTLE)
             except Exception:
                 pass
-        try:
-            eventType = getattr(GameEvent, 'SHOW_EXTENDED_INFO', None)
-            if eventType is not None:
-                g_eventBus.removeListener(eventType, self._onExtendedInfo, scope=EVENT_BUS_SCOPE.BATTLE)
-        except Exception:
-            pass
         self._unsubscribeKillCam()
         self.onBattleClosed.clear()
         self.onGUIVisibility.clear()
@@ -79,24 +67,22 @@ class BattleStateEvents(object):
             logger.debug('[BattleStateEvents] scale subscribe failed: %s', e)
 
     def _subscribeEventBus(self):
-        try:
-            g_eventBus.addListener(GameEvent.GUI_VISIBILITY, self._onGUIVisibility, scope=EVENT_BUS_SCOPE.BATTLE)
-        except Exception as e:
-            logger.error('[BattleStateEvents] GUI visibility subscribe failed: %s', e)
-        for eventName in ('FULL_STATS', 'FULL_STATS_QUEST_PROGRESS', 'FULL_STATS_PERSONAL_RESERVES', 'EVENT_STATS'):
+        for eventType, handler in self._eventBusListeners():
             try:
-                eventType = getattr(GameEvent, eventName, None)
-                if eventType is not None:
-                    g_eventBus.addListener(eventType, self._onToggleFullStats, scope=EVENT_BUS_SCOPE.BATTLE)
-            except Exception:
-                pass
+                g_eventBus.addListener(eventType, handler, scope=EVENT_BUS_SCOPE.BATTLE)
+            except Exception as e:
+                logger.error('[BattleStateEvents] event bus subscribe failed: %s', e)
 
-        try:
-            eventType = getattr(GameEvent, 'SHOW_EXTENDED_INFO', None)
+    def _eventBusListeners(self):
+        listeners = [(GameEvent.GUI_VISIBILITY, self._onGUIVisibility)]
+        for eventName in ('FULL_STATS', 'FULL_STATS_QUEST_PROGRESS', 'FULL_STATS_PERSONAL_RESERVES', 'EVENT_STATS'):
+            eventType = getattr(GameEvent, eventName, None)
             if eventType is not None:
-                g_eventBus.addListener(eventType, self._onExtendedInfo, scope=EVENT_BUS_SCOPE.BATTLE)
-        except Exception:
-            pass
+                listeners.append((eventType, self._onToggleFullStats))
+        eventType = getattr(GameEvent, 'SHOW_EXTENDED_INFO', None)
+        if eventType is not None:
+            listeners.append((eventType, self._onExtendedInfo))
+        return listeners
 
     def _onGUISpaceEntered(self, spaceID):
         from skeletons.gui.app_loader import GuiGlobalSpaceID
@@ -142,7 +128,10 @@ class BattleStateEvents(object):
             from skeletons.account_helpers.settings_core import ISettingsCore
             from skeletons.gui.battle_session import IBattleSessionProvider
             settingsCore = dependency.instance(ISettingsCore)
-            self._interfaceScale = float(settingsCore.interfaceScale.get())
+            scale = float(settingsCore.interfaceScale.get())
+            if self._interfaceScale != scale:
+                self._interfaceScale = scale
+                self.onScaleChanged(scale)
             self._unsubscribeKillCam()
             sessionProvider = dependency.instance(IBattleSessionProvider)
             killCamCtrl = getattr(sessionProvider.shared, 'killCamCtrl', None)

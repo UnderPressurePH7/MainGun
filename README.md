@@ -4,11 +4,11 @@
 
 # MainGun
 
-<img align="left" src="https://shields.io/badge/version-0.0.7-blue">
+<img align="left" src="https://shields.io/badge/version-0.0.10-blue">
 <br>
 
 ### Requirements:
-* [`net.openwg.gameface_1.2.2.wotmod`](https://gitlab.com/openwg/wot.gameface/-/releases)
+* World of Tanks 2.4.1 or newer (native `gen_resources` support)
 
 
 ### Instalation:

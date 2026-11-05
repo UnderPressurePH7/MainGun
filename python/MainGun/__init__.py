@@ -20,6 +20,7 @@ def initialize():
         import traceback
         logger.error('[MainGun] Traceback: %s', traceback.format_exc())
         finalize()
+        raise
 
 
 def finalize():
