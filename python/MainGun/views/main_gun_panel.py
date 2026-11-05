@@ -138,7 +138,6 @@ class MainGunPanel(object):
         self._dragStartCursor = None
         self._dragStartPosition = None
         self._lastPayload = None
-        self._includeL10n = True
 
     @staticmethod
     def _defaultState():
@@ -205,10 +204,8 @@ class MainGunPanel(object):
             'displayMode': int(self._displayMode),
             'scale': self._scaleFactor,
             'state': self._state,
+            'l10n': {'mainGun': getTranslation('mainGun')},
         }
-        if self._includeL10n:
-            payload['l10n'] = {'mainGun': getTranslation('mainGun')}
-            self._includeL10n = False
         return json.dumps(payload, ensure_ascii=False)
 
     def _onViewCreated(self, model):
@@ -264,7 +261,6 @@ class MainGunPanel(object):
             logger.error('[MainGunPanel] layout MainGunBattle is not registered (gen_resources missing?)')
             return
         self._token += 1
-        self._includeL10n = True
         self._loadWindow(self._token)
 
     def _loadWindow(self, token, retry=0):
