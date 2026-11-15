@@ -87,11 +87,17 @@ class BattleStateEvents(object):
     def _onGUISpaceEntered(self, spaceID):
         from skeletons.gui.app_loader import GuiGlobalSpaceID
         if spaceID == GuiGlobalSpaceID.BATTLE:
+            wasVisible = self.visible
+            wasExtended = self._extendedInfo
             self._hiddenByInterface = False
             self._hiddenByStatsPopup = False
             self._hiddenByKillCam = False
             self._extendedInfo = False
             self._handleBattleLoad()
+            if not wasVisible:
+                self.onGUIVisibility(True)
+            if wasExtended:
+                self.onExtendedInfo(False)
 
     def _onGUISpaceLeft(self, spaceID):
         from skeletons.gui.app_loader import GuiGlobalSpaceID

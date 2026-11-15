@@ -146,6 +146,7 @@ class DamageTracker(object):
         self._baseNeed = self._computeNeed(totalEnemiesHP)
         self._need = self._baseNeed
         self._initHealthMap()
+        self._playerDead = self._isVehicleDead(self._playerVehicleID)
         self._started = True
         self._panel.onBattleStart()
         missing = self._ensureSubscriptions()
@@ -266,6 +267,14 @@ class DamageTracker(object):
         except Exception:
             return None
 
+    def _isVehicleDead(self, vehicleID):
+        try:
+            vehicles = self._arenaVehicles()
+            data = vehicles.get(int(vehicleID)) if hasattr(vehicles, 'get') else None
+            return self._vehicleDataGet(data, 'isAlive', True) is False
+        except Exception:
+            return False
+
     def _isEnemyVehicle(self, vehicleID):
         team = self._teamForVehicle(vehicleID)
         return team is not None and self._playerTeam is not None and team != self._playerTeam
@@ -292,6 +301,8 @@ class DamageTracker(object):
         return 0 if hp is None else hp
 
     def _currentHealthOf(self, data, vehicleID=None):
+        if self._vehicleDataGet(data, 'isAlive', True) is False:
+            return 0
         hp = self._readHealthField(data, ('health',))
         if hp is None:
             hp = self._liveEntityHealth(vehicleID)
@@ -404,6 +415,7 @@ class DamageTracker(object):
             return
         if not self._isAllyVehicle(attackerID):
             return
+        attackerID = int(attackerID)
         totalDamage = int(self._damageByVehicle.get(attackerID, 0)) + damage
         self._damageByVehicle[attackerID] = totalDamage
         self._topAllyDamageValue = max(self._topAllyDamageValue, totalDamage)
@@ -443,7 +455,6 @@ class DamageTracker(object):
                 return
             appliedDamage = self._updateEnemyHealth(targetID, damage)
             if appliedDamage > 0:
-                # Health events only cover vehicles currently in view; ally damage outside view is not observable here.
                 self._recordAllyDamage(attackerID, appliedDamage)
                 self._invalidate()
         except Exception as e:
@@ -704,7 +715,6 @@ class DamageTracker(object):
         current = int(self._current)
         need = int(self._need)
         completed = need > 0 and current >= need
-        # TODO: confirm whether equal damage with an ally counts as completion.
         leader = self._isTeamDamageLeader()
         obtained = bool(completed and leader)
         failed = self._isFailed()

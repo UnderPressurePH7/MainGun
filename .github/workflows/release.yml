@@ -9,7 +9,7 @@ on:
       version:
         description: 'Mod Version'
         required: true
-        default: '0.0.10'
+        default: '0.0.11'
       mod_id:
         description: 'Mod ID (e.g., me.author.modname)'
         required: true

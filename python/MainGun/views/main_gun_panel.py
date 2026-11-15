@@ -285,6 +285,8 @@ class MainGunPanel(object):
         except Exception:
             logger.exception('[MainGunPanel] Failed to load Gameface window')
             self._window = None
+            self._model = None
+            self._lastPayload = None
 
     def _dropWindow(self):
         self._token += 1
@@ -394,7 +396,8 @@ class MainGunPanel(object):
     def _syncPositionAndMove(self):
         if not self._active or self._window is None:
             return
-        self._syncPositionFromOffset()
+        if not self._dragging:
+            self._syncPositionFromOffset()
         self._move()
 
     def _cancelViewCallbacks(self):

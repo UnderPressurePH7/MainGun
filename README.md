@@ -4,12 +4,8 @@
 
 # MainGun
 
-<img align="left" src="https://shields.io/badge/version-0.0.10-blue">
+<img align="left" src="https://shields.io/badge/version-0.0.11-blue">
 <br>
-
-### Requirements:
-* World of Tanks 2.4.1 or newer (native `gen_resources` support)
-
 
 ### Instalation:
 1. Download mod from [Releases](https://github.com/UnderPressurePH7/MainGun/releases).
