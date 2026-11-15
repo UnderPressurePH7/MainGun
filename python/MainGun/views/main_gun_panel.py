@@ -37,6 +37,7 @@ except Exception:
 
 VIEW_NAME = 'MainGunBattle'
 BOUNDARY_GAP = 0
+MIN_VIEW_SIZE = 8
 DRAG_THRESHOLD = 20
 DRAG_TICK_ACTIVE = 0.0
 DRAG_TICK_ARMED = 0.05
@@ -381,6 +382,9 @@ class MainGunPanel(object):
                 panelWidth = max(1, int(float(parts[2]))) if len(parts) > 2 else width
                 panelHeight = max(1, int(float(parts[3]))) if len(parts) > 3 else height
             except Exception:
+                return
+            if min(width, height, panelWidth, panelHeight) < MIN_VIEW_SIZE:
+                logger.debug('[MainGunPanel] collapsed view size ignored: %s', value)
                 return
             sizeChanged = (width, height) != tuple(self._size) or (panelWidth, panelHeight) != tuple(self._panelSize)
             if sizeChanged:

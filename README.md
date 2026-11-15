@@ -4,7 +4,7 @@
 
 # MainGun
 
-<img align="left" src="https://shields.io/badge/version-0.0.11-blue">
+<img align="left" src="https://shields.io/badge/version-0.0.12-blue">
 <br>
 
 ### Instalation:

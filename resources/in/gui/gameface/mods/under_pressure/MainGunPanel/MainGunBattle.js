@@ -33,8 +33,16 @@
         selectorWidth: 53,
         selectorHeight: 25,
         selectorGap: 5,
-        minPanelHeight: { 1: 26, 2: 42 }
+        minPanelHeight: { 1: 26, 2: 42 },
+        minContentWidth: 8,
+        labelCharWidth: 13,
+        remainingCharWidth: 11,
+        labelGap: 8,
+        iconWidth: 40,
+        statusWidth: 26
     };
+    var MAX_COLLAPSE_RETRIES = 3;
+    var collapseRetries = 0;
 
     function debug(message) {
         try {
@@ -146,7 +154,8 @@
         } catch (e) {}
         if (uiScale > 0) return uiScale;
         var size = clientSize();
-        return Math.min(size.width / 1920, size.height / 1080) || 1;
+        var scale = Math.min(size.width / 1920, size.height / 1080);
+        return scale > 0 ? scale : 1;
     }
 
     function reportSize(width, height, panelWidth, panelHeight) {
@@ -194,6 +203,55 @@
         revealAfterResize(key);
     }
 
+    function childrenWidth() {
+        var total = 0;
+        var nodes = contentEl.children;
+        for (var i = 0; i < nodes.length; i++) {
+            var nodeWidth = nodes[i].getBoundingClientRect().width;
+            if (!(nodeWidth > 0)) continue;
+            var style = window.getComputedStyle(nodes[i]);
+            total += nodeWidth + toNumber(style.marginLeft, 0) + toNumber(style.marginRight, 0);
+        }
+        return total;
+    }
+
+    function estimateContentWidth(rem, displayMode) {
+        var width = String(remainingEl.mgText || '').length * FALLBACK_LAYOUT.remainingCharWidth;
+        if (displayMode === 2) {
+            width += FALLBACK_LAYOUT.iconWidth;
+        } else {
+            width += String(labelEl.mgText || '').length * FALLBACK_LAYOUT.labelCharWidth + FALLBACK_LAYOUT.labelGap;
+        }
+        if (statusEl.mgClasses && statusEl.mgClasses['main-gun-status-visible']) {
+            width += FALLBACK_LAYOUT.statusWidth;
+        }
+        return width * rem;
+    }
+
+    // Gameface can report a collapsed (near-zero) content box; sizing the panel from it clips the caption.
+    function measureContentWidth(rem, displayMode) {
+        var minWidth = FALLBACK_LAYOUT.minContentWidth * rem;
+        var contentWidth = contentEl.getBoundingClientRect().width;
+        if (contentWidth >= minWidth) {
+            collapseRetries = 0;
+            return contentWidth;
+        }
+        var summed = childrenWidth();
+        if (summed >= minWidth) {
+            return summed;
+        }
+        if (collapseRetries < MAX_COLLAPSE_RETRIES) {
+            collapseRetries++;
+            debug('content width collapsed (' + contentWidth + '), retry ' + collapseRetries);
+            setStyle(root, 'width', '');
+            setStyle(root, 'height', '');
+            setStyle(panelEl, 'width', '');
+            scheduleMeasure();
+            return null;
+        }
+        return estimateContentWidth(rem, displayMode);
+    }
+
     function measureAndReport() {
         applyRemScale();
         var rem = appliedRem;
@@ -214,13 +272,21 @@
         // CSS min-height is shared by both modes; mode 2 needs a taller minimum.
         minPanelHeight = Math.max(minPanelHeight, FALLBACK_LAYOUT.minPanelHeight[displayMode] * rem);
 
-        var contentWidth = contentEl.getBoundingClientRect().width;
+        var contentWidth = measureContentWidth(rem, displayMode);
+        if (contentWidth === null) return;
         var measuredPanelHeight = panelEl.getBoundingClientRect().height;
 
-        var panelWidth = Math.ceil(contentWidth + paddingX + borderX);
+        if (!(measuredPanelHeight > 0)) measuredPanelHeight = 0;
+        var minPanelWidth = FALLBACK_LAYOUT.minContentWidth * rem + paddingX + borderX;
+
+        var panelWidth = Math.ceil(Math.max(contentWidth + paddingX + borderX, minPanelWidth));
         var panelHeight = Math.ceil(Math.max(measuredPanelHeight, minPanelHeight));
         var width = Math.ceil(Math.max(panelWidth, selectorWidth));
         var height = Math.ceil(panelHeight + selectorGap + selectorHeight);
+        if (!(width > 0 && height > 0 && panelWidth > 0 && panelHeight > 0)) {
+            debug('invalid panel size ' + width + 'x' + height + ', measure skipped');
+            return;
+        }
 
         setStyle(root, 'width', width + 'px');
         setStyle(root, 'height', height + 'px');

@@ -1,4 +1,4 @@
-__version__ = '0.0.11'
+__version__ = '0.0.12'
 __author__ = 'Under_Pressure'
 __mod_name__ = 'MainGun'
 
